@@ -12,7 +12,7 @@ ifeq ($(UNAME_S),Linux)
 	Q_COL := 1
 endif
 ifeq ($(UNAME_S),Darwin)
-	JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-18.0.1.1.jdk/Contents/Home
+	JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-11.0.16.1.jdk/Contents/Home
 	OSFLAG := darwin
 	SHARED_LIB := libsystem5msg.dylib
 	LINK_FLAGS := -dynamiclib
