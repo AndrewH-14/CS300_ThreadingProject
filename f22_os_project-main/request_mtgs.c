@@ -13,20 +13,12 @@ int   msqid;
 int   msgflg;
 key_t key;
 
-void * msg_send();
+void * request_thread(void * p_rbuf);
 
-void * msg_rcv();
-
-
-
+// ./request_mtgs | cat input.msg
 int main(int argc, char *argv[])
 {
-    printf("%s\n", argv[0]);
-    printf("%s\n", argv[1]);
-    printf("%s\n", argv[2]);
-    printf("%s\n", argv[3]);
-
-    return 0;
+    printf("%i\n", argc);
 }
 
 /**
@@ -37,15 +29,10 @@ int main(int argc, char *argv[])
  * 
  * @return 
  */
-void * msg_send(void * p_rbuf)
+void * request_thread(void * p_rbuf)
 {
+    // Send messsage
 
-}
+    // Wait for response
 
-/**
- * Thread function that will wait for responses for the sent messages
- */
-void * msg_rcv(void)
-{
-    
 }
