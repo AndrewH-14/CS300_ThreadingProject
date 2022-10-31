@@ -2,6 +2,9 @@ package edu.cs300;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.Writer;
+import java.io.FileWriter;
 import java.time.LocalDateTime;
 import java.util.Scanner;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -77,9 +80,9 @@ public class Employee extends Thread {
                 if (mtgReq.request_id > 0) {
 
                     boolean added = calendar.AddMeeting(mtgReq.description, 
-                                                    mtgReq.location, 
-                                                    LocalDateTime.parse(mtgReq.datetime), 
-                                                    mtgReq.duration);
+                                                        mtgReq.location, 
+                                                        LocalDateTime.parse(mtgReq.datetime), 
+                                                        mtgReq.duration);
 
                     if (added) {
                         // Send response stating that the meeting was accepted
@@ -92,9 +95,25 @@ public class Employee extends Thread {
                 } else {
 
                     // Back up the calendar and exit the loop
-                    break;
+                    Meeting[] meetingArray = calendar.GetCalendarArray();
+
+                    try {
+                        // https://stackoverflow.com/a/52581496
+                        FileWriter fileWriter = new FileWriter(this.calendar_filename + ".bak");
+
+                        for (Meeting meeting : meetingArray) {
+                            fileWriter.write(meeting.description + "," + 
+                                             meeting.location    + "," + 
+                                             meeting.time        + "," + 
+                                             meeting.duration    + "\n");
+                        }
+
+                        fileWriter.close();
+                        break;
+                    } catch (IOException e) {
+                        System.out.println("A file writing error occured");
+                    }
                 }
-                
             } catch(InterruptedException e) {
                 System.err.println(e.getMessage());
             }
