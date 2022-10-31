@@ -69,10 +69,12 @@ int main(int argc, char *argv[])
         // printf("Creating a thread for: %s\n", test_argv[current_message]);
         meeting_request_buf rbuf  = parse_request(test_argv[current_message]);
         requests[rbuf.request_id] = rbuf;
-        if (rbuf.request_id > 0)
+        if (rbuf.request_id >= 0)
         {
             // Use the globally stored argument to ensure that no race condition is encountered
             pthread_create(&p, NULL, send_request, (void *) &requests[rbuf.request_id].request_id);
+            // Wait here until all messages have been sent
+            pthread_join(p, NULL);
             num_pending_messages++;
         }
     }
@@ -80,7 +82,7 @@ int main(int argc, char *argv[])
     // Create multiple receiver threads that will wait for responses to be sent
     for (int idx = 0; idx < num_pending_messages; idx++)
     {
-        printf("Create a client thread that will handle incoming messages.");
+        //printf("Create a client thread that will handle incoming messages.");
     }
 }
 
@@ -142,25 +144,25 @@ meeting_request_buf parse_request(char * p_request_string)
     rbuf.request_id=atoi(strtok(p_request_string, deliminter));
     strncpy(
         rbuf.empId,
-        strtok(p_request_string, deliminter),
+        strtok(NULL, deliminter),
         EMP_ID_MAX_LENGTH
     );
     strncpy(
         rbuf.description_string,
-        strtok(p_request_string, deliminter),
+        strtok(NULL, deliminter),
         DESCRIPTION_MAX_LENGTH
     );
     strncpy(
         rbuf.location_string,
-        strtok(p_request_string, deliminter),
+        strtok(NULL, deliminter),
         LOCATION_MAX_LENGTH
     );
     strncpy(
         rbuf.datetime,
-        strtok(p_request_string, deliminter),
+        strtok(NULL, deliminter),
         DATETIME_LENGTH
     );
-    rbuf.duration=atoi(strtok(p_request_string, deliminter));
+    rbuf.duration=atoi(strtok(NULL, deliminter));
 
     return rbuf;
 }

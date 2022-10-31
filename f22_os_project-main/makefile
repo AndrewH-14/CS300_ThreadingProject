@@ -33,7 +33,10 @@ CLASSES = \
 	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/CalendarManager.java \
 	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/Worker.java \
 	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/MessageJNI.java \
-	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/DebugLog.java 
+	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/DebugLog.java  \
+	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/Employee.java \
+	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/CalendarList.java \
+	$(JAVA_SRC_ROOT)/$(JAVA_PKG)/Meeting.java
 
 default: classes
 
