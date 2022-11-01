@@ -28,10 +28,9 @@ volatile bool copy_complete = false;
 pthread_t requests[200];
 
 // A global thread of responses so that any thread can view it
-volatile int number_of_responses = 0;
-volatile int number_of_requests  = 0;
-volatile int current_response    = 0;
-meeting_response_buf responses[200]      = { 0 };
+volatile int number_of_responses    = 0;
+volatile int current_response       = 0;
+meeting_response_buf responses[200] = { 0 };
 pthread_cond_t       response_conds[200];
 
 // Thread functions that will be called by pthread_create()
@@ -48,6 +47,8 @@ meeting_request_buf parse_request(char * p_request_string);
  */
 int main(int argc, char *argv[])
 {
+    int number_of_requests = 0;
+
     // Initialize pthread mutex variables that will be used to support concurrency
     pthread_mutex_init(&send_mutex, NULL);
     pthread_mutex_init(&receive_mutex, NULL);
@@ -153,8 +154,10 @@ void * send_request(void * p_rbuf)
     if (rbuf.request_id != 0)
     {
         pthread_mutex_lock(&receive_mutex);
-        pthread_cond_wait(&response_conds[rbuf.request_id - 1], &receive_mutex);
-        pthread_mutex_unlock(&receive_mutex);
+        while(responses[rbuf.request_id - 1].request_id == 0)
+        {
+            pthread_cond_wait(&response_conds[rbuf.request_id - 1], &receive_mutex);
+        }
 
         // Print the reponse (we can now access the response since no other thread will edit it)
         if (responses[rbuf.request_id - 1].avail == 1)
@@ -167,6 +170,13 @@ void * send_request(void * p_rbuf)
             printf("Meeting request %d for employee %s was rejected due to conflict (%s @ %s starting %s for %d minutes\n", 
                 rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
         }
+
+        current_response++;
+        if (responses[current_response].request_id != 0)
+        {
+            pthread_cond_signal(&response_conds[current_response]);
+        }
+        pthread_mutex_unlock(&receive_mutex);
     }
     return NULL;
 }
@@ -193,7 +203,9 @@ void * receive_response()
             // Store the reponse in the global array so that it can be accessed by the threads.
             // Then signal to the thread that it's response has been received.
             responses[rbuf.request_id - 1] = rbuf;
-            pthread_cond_signal(&response_conds[rbuf.request_id - 1]);
+            pthread_mutex_lock(&receive_mutex);
+            pthread_cond_signal(&response_conds[current_response]);
+            pthread_mutex_unlock(&receive_mutex);
 
             int errnum = errno;
             if (ret < 0 && errno !=EINTR)
