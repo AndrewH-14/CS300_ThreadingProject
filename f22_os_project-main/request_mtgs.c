@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,38 +11,23 @@
 #include "meeting_request_formats.h"
 #include "queue_ids.h"
 
-volatile int num_pending_messages = 0;
-meeting_request_buf * requests;
 int msqid;
 int msgflg = IPC_CREAT | 0666;
 key_t key;
+char inputLine[100] = { 0 };
+sem_t lock;
 
-int test_argc = 4;
-char * test_argv[4];
-
-void * send_request(void * p_request_id);
-
-void * receive_response(void);
+void * send_request(void * p_rbuf);
+void * receive_response();
 
 meeting_request_buf parse_request(char * p_request_string);
 
 // ./request_mtgs | cat input.msg
 int main(int argc, char *argv[])
 {
-    // Test argv used until stdin argv is figured out
-    // TODO: remove this
-    test_argv[0] = malloc(sizeof(char) * sizeof("./request_mtgs"));
-    strncpy(test_argv[0], "./request_mtgs", strlen("./request_mtgs"));
-    test_argv[1] = malloc(sizeof(char) * sizeof("1,1234,\"morning mtg\",\"conf room\",2022-12-17T14:30,60"));
-    strncpy(test_argv[1], "1,1234,\"morning mtg\",\"conf room\",2022-12-17T14:30,60", strlen("1,1234,\"morning mtg\",\"conf room\",2022-12-17T14:30,60"));
-    test_argv[2] = malloc(sizeof(char) * sizeof("1,1234,\"conflict mtg\",\"zoom\",2022-12-17T15:00,60"));
-    strncpy(test_argv[2], "2,1234,\"conflict mtg\",\"zoom\",2022-12-17T15:00,60", strlen("1,1234,\"conflict mtg\",\"zoom\",2022-12-17T15:00,60"));
-    test_argv[3] = malloc(sizeof(char) * sizeof("0,9999,\"any\",\"any\",any,60"));
-    strncpy(test_argv[3], "0,9999,\"any\",\"any\",any,60", strlen("0,9999,\"any\",\"any\",any,60"));
-    // End of test code
-
     // Pthread variables
     pthread_t p;
+    sem_init(&lock, 0, 1);
 
     // Initialize the system 5 queue variables
     key = ftok(FILE_IN_HOME_DIR,QUEUE_NUMBER);
@@ -60,30 +46,23 @@ int main(int argc, char *argv[])
         fprintf(stderr, "msgget: msgget succeeded: msgqid = %d\n", msqid);
 #endif
 
-    // Create a dynamically sized buffer to store the request information using argc
-    requests = (meeting_request_buf *) malloc(sizeof(meeting_request_buf) * (test_argc - 2));
-
-    // Create a loop that passes the meeting request struct to the thread
-    for (int current_message = 1; current_message < test_argc; current_message++)
+    while (fgets(inputLine, 100, stdin) != NULL)
     {
-        // printf("Creating a thread for: %s\n", test_argv[current_message]);
-        meeting_request_buf rbuf  = parse_request(test_argv[current_message]);
-        requests[rbuf.request_id] = rbuf;
-        if (rbuf.request_id >= 0)
-        {
-            // Use the globally stored argument to ensure that no race condition is encountered
-            pthread_create(&p, NULL, send_request, (void *) &requests[rbuf.request_id].request_id);
-            // Wait here until all messages have been sent
-            pthread_join(p, NULL);
-            num_pending_messages++;
-        }
+        // printf("%s", inputLine);
+        meeting_request_buf rbuf = parse_request(inputLine);
+        sem_wait(&lock);
+        pthread_create(&p, NULL, send_request, (void *) &rbuf);
     }
 
-    // Create multiple receiver threads that will wait for responses to be sent
-    for (int idx = 0; idx < num_pending_messages; idx++)
-    {
-        //printf("Create a client thread that will handle incoming messages.");
-    }
+    // Create a single thread to read the responses from the message queue
+    pthread_t receiver_thread;
+    pthread_create(&receiver_thread, NULL, receive_response, NULL);
+
+    // Once the reciever thread exits, we have received all responses, and can
+    // exit the program
+    pthread_join(receiver_thread, NULL);
+
+    return 0;
 }
 
 /**
@@ -95,11 +74,10 @@ int main(int argc, char *argv[])
  * 
  * @return NULL
  */
-void * send_request(void * p_request_id)
+void * send_request(void * p_rbuf)
 {
-    int request_id = *(int *)p_request_id;
-
-    meeting_request_buf rbuf = requests[request_id];
+    meeting_request_buf rbuf = *(meeting_request_buf *) p_rbuf;
+    sem_post(&lock);
 
     // Send a message.
     if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, IPC_NOWAIT)) < 0) {
@@ -121,7 +99,7 @@ void * send_request(void * p_request_id)
 /**
  * Thread function that will 
  */
-void * receive_response(void)
+void * receive_response()
 {
     return NULL;
 }
