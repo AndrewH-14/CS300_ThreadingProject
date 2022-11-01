@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <pthread.h>
-#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,23 +10,45 @@
 #include "meeting_request_formats.h"
 #include "queue_ids.h"
 
+// Variables used to determine the system 5 queue that will be used
 int msqid;
 int msgflg = IPC_CREAT | 0666;
 key_t key;
-char inputLine[100] = { 0 };
-sem_t lock;
 
+// An array to a line from stdin when reading in requests
+// TODO: Compute the maximum length
+char inputLine[100] = { 0 };
+
+// Phread varibales that are used to ensure concurrency works correctly
+pthread_mutex_t send_mutex;
+pthread_mutex_t receive_mutex;
+pthread_cond_t  cond = PTHREAD_COND_INITIALIZER;
+volatile int done = 0;
+volatile int number_of_responses = 0;
+
+// A global thread of responses so that any thread can view it
+meeting_response_buf responses[200]      = { 0 };
+pthread_cond_t       response_conds[200] = { PTHREAD_COND_INITIALIZER };
+int                  cond_variables[200] = { 0 };
+
+// Thread functions that will be called by pthread_create()
 void * send_request(void * p_rbuf);
 void * receive_response();
 
+// Helper functions
 meeting_request_buf parse_request(char * p_request_string);
 
-// ./request_mtgs | cat input.msg
+/**
+ * The main function for request_mtgs.c
+ * 
+ * @return 0 
+ */
 int main(int argc, char *argv[])
 {
     // Pthread variables
     pthread_t p;
-    sem_init(&lock, 0, 1);
+    pthread_mutex_init(&send_mutex, NULL);
+    pthread_mutex_init(&receive_mutex, NULL);
 
     // Initialize the system 5 queue variables
     key = ftok(FILE_IN_HOME_DIR,QUEUE_NUMBER);
@@ -50,8 +71,13 @@ int main(int argc, char *argv[])
     {
         // printf("%s", inputLine);
         meeting_request_buf rbuf = parse_request(inputLine);
-        sem_wait(&lock);
+        pthread_mutex_lock(&send_mutex);
         pthread_create(&p, NULL, send_request, (void *) &rbuf);
+        while (done == 0)
+            pthread_cond_wait(&cond, &send_mutex);
+        pthread_mutex_unlock(&send_mutex);
+        done = 0;
+        number_of_responses++;
     }
 
     // Create a single thread to read the responses from the message queue
@@ -77,7 +103,8 @@ int main(int argc, char *argv[])
 void * send_request(void * p_rbuf)
 {
     meeting_request_buf rbuf = *(meeting_request_buf *) p_rbuf;
-    sem_post(&lock);
+    done = 1;
+    pthread_cond_signal(&cond);
 
     // Send a message.
     if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, IPC_NOWAIT)) < 0) {
@@ -93,6 +120,25 @@ void * send_request(void * p_rbuf)
         rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
     }
 
+    // Wait for the thread to be signalled that it's thread has been received,
+    // and that it is it's turn to print the response
+    pthread_mutex_lock(&receive_mutex);
+    while (cond_variables[rbuf.request_id - 1] == 0)
+        pthread_cond_wait(&response_conds[rbuf.request_id - 1], &receive_mutex);
+    pthread_mutex_unlock(&receive_mutex);
+
+
+    // Print the reponse (we can now access the response since no other thread will edit it)
+    if (responses[rbuf.request_id - 1].avail == 1)
+    {
+        printf("Meeting request %d for employee %s was accepted (%s @ %s starting %s for %d minutes\n", 
+            rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
+    }
+    else
+    {
+        printf("Meeting request %d for employee %s was rejected due to conflict (%s @ %s starting %s for %d minutes\n", 
+            rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
+    }
     return NULL;
 }
 
@@ -101,6 +147,37 @@ void * send_request(void * p_rbuf)
  */
 void * receive_response()
 {
+    // msgrcv to receive mtg request response type 1
+    int ret;
+    meeting_response_buf rbuf = { 0 };
+
+    // A response will not be sent for a message with request_id == 0
+    number_of_responses = number_of_responses - 1;
+
+    while (number_of_responses > 0)
+    {
+        do 
+        {
+            ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);//receive type 1 message
+
+            responses[rbuf.request_id - 1] = rbuf;
+            cond_variables[rbuf.request_id - 1] = 1;
+            pthread_cond_signal(&response_conds[rbuf.request_id - 1]);
+
+            int errnum = errno;
+            if (ret < 0 && errno !=EINTR)
+            {
+                fprintf(stderr, "Value of errno: %d\n", errno);
+                perror("Error printed by perror");
+                fprintf(stderr, "Error receiving msg: %s\n", strerror( errnum ));
+            }
+        } 
+        while ((ret < 0 ) && (errno == 4) && (number_of_responses > 0));
+
+        fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",rbuf.request_id,rbuf.avail);
+        number_of_responses--;
+    }
+
     return NULL;
 }
 
