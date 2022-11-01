@@ -148,18 +148,21 @@ void * send_request(void * p_rbuf)
         rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
     }
 
-    // Lock the variable since we are about to check and update the current_response
-    // shared variable. Loop while the current response needed is not equal to this
-    // threads request_id and the response has not been received.
+    // If the request expects a response, block until it is received
     if (rbuf.request_id != 0)
     {
+        // Lock the received mutex to ensure that all of the shared variables are accurate
+        // when accessed. This also needs to include the print statements to ensure that
+        // they are printed before allowing another thread to execute, creating a race
+        // condition as to which print statement executes first.
         pthread_mutex_lock(&receive_mutex);
-        while(responses[rbuf.request_id - 1].request_id == 0)
+        while(responses[rbuf.request_id - 1].request_id == 0) //< Wait until the response has been received
         {
+            // Put this thread to sleep until the receiver signals that a new response has been received,
+            // and this request is the next one to be printed.
             pthread_cond_wait(&response_conds[rbuf.request_id - 1], &receive_mutex);
         }
 
-        // Print the reponse (we can now access the response since no other thread will edit it)
         if (responses[rbuf.request_id - 1].avail == 1)
         {
             printf("Meeting request %d for employee %s was accepted (%s @ %s starting %s for %d minutes\n", 
@@ -171,7 +174,10 @@ void * send_request(void * p_rbuf)
                 rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
         }
 
+        // Update the response that needs to be printed next
         current_response++;
+
+        // If the next response has already been received, then signal the thread to wake up
         if (responses[current_response].request_id != 0)
         {
             pthread_cond_signal(&response_conds[current_response]);
@@ -193,6 +199,7 @@ void * receive_response()
     // A response will not be sent for a message with request_id == 0
     number_of_responses = number_of_responses - 1;
 
+    // Loop until we have received a response for each request sent
     while (number_of_responses > 0)
     {
         do 
@@ -201,9 +208,10 @@ void * receive_response()
             ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);
 
             // Store the reponse in the global array so that it can be accessed by the threads.
-            // Then signal to the thread that it's response has been received.
-            responses[rbuf.request_id - 1] = rbuf;
+            // Then signal to the thread that it's response has been received. This must be in
+            // a locked section in case a thread is attempting to update current_response.
             pthread_mutex_lock(&receive_mutex);
+            responses[rbuf.request_id - 1] = rbuf;
             pthread_cond_signal(&response_conds[current_response]);
             pthread_mutex_unlock(&receive_mutex);
 
