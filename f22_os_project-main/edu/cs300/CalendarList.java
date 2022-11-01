@@ -73,7 +73,7 @@ public class CalendarList {
     }
 
     public Meeting[] GetCalendarArray() {
-        return calendar.toArray(Meeting[]::new);
+        return calendar.toArray(new Meeting[0]);
     }
 
     public int NumberOfMeetings() {
