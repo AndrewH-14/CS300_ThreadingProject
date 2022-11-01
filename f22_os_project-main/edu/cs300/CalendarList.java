@@ -28,6 +28,11 @@ public class CalendarList {
                                            meetingStartTime, 
                                            meetingDuration);
 
+        if (calendar.contains(meetingToAdd))
+        {
+            return false;
+        }
+
         Meeting lowerMeeting  = ((TreeSet<Meeting>)calendar).lower(meetingToAdd);
         Meeting higherMeeting = ((TreeSet<Meeting>)calendar).higher(meetingToAdd);
 

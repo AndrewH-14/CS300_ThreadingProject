@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,14 +23,16 @@ char inputLine[100] = { 0 };
 // Phread varibales that are used to ensure concurrency works correctly
 pthread_mutex_t send_mutex;
 pthread_mutex_t receive_mutex;
-pthread_cond_t  cond = PTHREAD_COND_INITIALIZER;
-volatile int done = 0;
-volatile int number_of_responses = 0;
+pthread_cond_t  cond        = PTHREAD_COND_INITIALIZER;
+volatile bool copy_complete = false;
+pthread_t requests[200];
 
 // A global thread of responses so that any thread can view it
+volatile int number_of_responses = 0;
+volatile int number_of_requests  = 0;
+volatile int current_response    = 0;
 meeting_response_buf responses[200]      = { 0 };
-pthread_cond_t       response_conds[200] = { PTHREAD_COND_INITIALIZER };
-int                  cond_variables[200] = { 0 };
+pthread_cond_t       response_conds[200];
 
 // Thread functions that will be called by pthread_create()
 void * send_request(void * p_rbuf);
@@ -45,12 +48,18 @@ meeting_request_buf parse_request(char * p_request_string);
  */
 int main(int argc, char *argv[])
 {
-    // Pthread variables
-    pthread_t p;
+    // Initialize pthread mutex variables that will be used to support concurrency
     pthread_mutex_init(&send_mutex, NULL);
     pthread_mutex_init(&receive_mutex, NULL);
 
-    // Initialize the system 5 queue variables
+    // Initialize the pthread conditional variables that the threads will wait on.
+    for (int idx = 0; idx < 200; idx++)
+    {
+        pthread_cond_init(&response_conds[idx], NULL);
+    }
+
+    // Set up the system 5 queue that will be used to send and receive messages
+    // Note: Code copied from msgsnd_mtg_request.c
     key = ftok(FILE_IN_HOME_DIR,QUEUE_NUMBER);
     if (key == 0xffffffff) {
         fprintf(stderr,"Key cannot be 0xffffffff..fix queue_ids.h to link to existing file\n");
@@ -67,26 +76,44 @@ int main(int argc, char *argv[])
         fprintf(stderr, "msgget: msgget succeeded: msgqid = %d\n", msqid);
 #endif
 
+    // Create a thread that will send a meeting request per line of stdin
     while (fgets(inputLine, 100, stdin) != NULL)
     {
-        // printf("%s", inputLine);
         meeting_request_buf rbuf = parse_request(inputLine);
+
+        // Must use a mutex lock to ensure that the passed argument is copied over
+        // to the thread's stack before overwritting the value
         pthread_mutex_lock(&send_mutex);
-        pthread_create(&p, NULL, send_request, (void *) &rbuf);
-        while (done == 0)
+        pthread_create(&requests[number_of_responses], NULL, send_request, (void *) &rbuf);
+        while (!copy_complete)
+        {
             pthread_cond_wait(&cond, &send_mutex);
+        }
+        copy_complete = false;
         pthread_mutex_unlock(&send_mutex);
-        done = 0;
+
+        // Record the number of responses that have been received. This value
+        // will let us know when we have received all of the responses, and can
+        // exit the program. This value will be decremented as responses are 
+        // received.
         number_of_responses++;
+
+        // Record the number of requests made. This will be used to ensure that
+        // all responses are recorded. This value will NOT be decremented.
+        number_of_requests++;
     }
 
     // Create a single thread to read the responses from the message queue
     pthread_t receiver_thread;
     pthread_create(&receiver_thread, NULL, receive_response, NULL);
 
-    // Once the reciever thread exits, we have received all responses, and can
-    // exit the program
-    pthread_join(receiver_thread, NULL);
+    // Once all of the request threads have completed, we know that all of the 
+    // reponses have been received and printed, therefore we can now exit the
+    // program
+    for (int request_thread_idx = 0; request_thread_idx < number_of_requests; request_thread_idx++)
+    {
+        pthread_join(requests[request_thread_idx], NULL);
+    }
 
     return 0;
 }
@@ -103,7 +130,7 @@ int main(int argc, char *argv[])
 void * send_request(void * p_rbuf)
 {
     meeting_request_buf rbuf = *(meeting_request_buf *) p_rbuf;
-    done = 1;
+    copy_complete = true;
     pthread_cond_signal(&cond);
 
     // Send a message.
@@ -120,24 +147,26 @@ void * send_request(void * p_rbuf)
         rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
     }
 
-    // Wait for the thread to be signalled that it's thread has been received,
-    // and that it is it's turn to print the response
-    pthread_mutex_lock(&receive_mutex);
-    while (cond_variables[rbuf.request_id - 1] == 0)
+    // Lock the variable since we are about to check and update the current_response
+    // shared variable. Loop while the current response needed is not equal to this
+    // threads request_id and the response has not been received.
+    if (rbuf.request_id != 0)
+    {
+        pthread_mutex_lock(&receive_mutex);
         pthread_cond_wait(&response_conds[rbuf.request_id - 1], &receive_mutex);
-    pthread_mutex_unlock(&receive_mutex);
+        pthread_mutex_unlock(&receive_mutex);
 
-
-    // Print the reponse (we can now access the response since no other thread will edit it)
-    if (responses[rbuf.request_id - 1].avail == 1)
-    {
-        printf("Meeting request %d for employee %s was accepted (%s @ %s starting %s for %d minutes\n", 
-            rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
-    }
-    else
-    {
-        printf("Meeting request %d for employee %s was rejected due to conflict (%s @ %s starting %s for %d minutes\n", 
-            rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
+        // Print the reponse (we can now access the response since no other thread will edit it)
+        if (responses[rbuf.request_id - 1].avail == 1)
+        {
+            printf("Meeting request %d for employee %s was accepted (%s @ %s starting %s for %d minutes\n", 
+                rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
+        }
+        else
+        {
+            printf("Meeting request %d for employee %s was rejected due to conflict (%s @ %s starting %s for %d minutes\n", 
+                rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
+        }
     }
     return NULL;
 }
@@ -158,10 +187,12 @@ void * receive_response()
     {
         do 
         {
-            ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);//receive type 1 message
+            // Block until a message type 1 message is received
+            ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);
 
+            // Store the reponse in the global array so that it can be accessed by the threads.
+            // Then signal to the thread that it's response has been received.
             responses[rbuf.request_id - 1] = rbuf;
-            cond_variables[rbuf.request_id - 1] = 1;
             pthread_cond_signal(&response_conds[rbuf.request_id - 1]);
 
             int errnum = errno;
