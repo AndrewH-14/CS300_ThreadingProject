@@ -10,57 +10,78 @@ import java.util.Scanner;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
+/**
+ * The Employee class should be used to create a worker thread for each employee
+ * that has a calendar. After being initialized and started, the thread will
+ * run until it receives a request_id of 0, which is passed in from the 
+ * input queue.
+ * 
+ * @note Worker.java was used as a template for this class.
+ */
 public class Employee extends Thread {
     
-    String employee_id;
-    String calendar_filename;
-    String employee_name;
+    String employeeID;
+    String calendarFilename;
+    String employeeName;
     ArrayBlockingQueue<MeetingRequest> incomingRequests;
     ArrayBlockingQueue<MeetingResponse> outgoingResponse;
     CalendarList calendar;
 
     /**
-     * Constructor for the Employee class. Stores employee information, and 
-     * initializes the data structure that will hold the employee's calendar.
+     * The constructor for the Employee class.
      * 
-     * @param employee_id       The employees id in string form.
-     * @param calendar_filename The name of the file that contains the employee 
-     *                          calendar information.
-     * @param employee_name     The name of the employee.
+     * @param employeeID       The ID of an employee who has a calendar which
+     *                         will potentially need to be updated.
+     * @param calendarFilename The name of the file that has the calendar's 
+     *                         starting information. The information from this
+     *                         file will be read in and added to the calendar
+     *                         data structure upon thread initialization.
+     * @param employeeName     The name of the employee.
+     * @param incomingRequests A queue that will be used to recieve messages
+     *                         via a blocking wait. Once a message is received,
+     *                         the thread will attempt to add it to the calendar.
+     *                         This queue should only be accessed by one employee
+     *                         thread at a time.
+     * @param outgoingResponse A queue that wil be used to send response messages
+     *                         regarding the addition of the meeting. This queue is
+     *                         shared between all employee threads.
      */
-    public Employee(String employee_id, 
-                    String calendar_filename, 
-                    String employee_name,
+    public Employee(String employeeID, 
+                    String calendarFilename, 
+                    String employeeName,
                     ArrayBlockingQueue<MeetingRequest> incomingRequests,
                     ArrayBlockingQueue<MeetingResponse> outgoingResponse) {
 
-        this.employee_id        = employee_id;
-        this.calendar_filename  = calendar_filename;
-        this.employee_name      = employee_id;
-        this.calendar           = new CalendarList();
-        this.incomingRequests   = incomingRequests;
-        this.outgoingResponse   = outgoingResponse;
+        this.employeeID       = employeeID;
+        this.calendarFilename = calendarFilename;
+        this.employeeName     = employeeName;
+        this.incomingRequests = incomingRequests;
+        this.outgoingResponse = outgoingResponse;
+        this.calendar         = new CalendarList();
     }
 
-    /*
-     * Function that creates a thread for the employee that must
+    /**
+     * Worker thread function for the Employee class. An Employee thread should
+     * be created for each employee in the employee.csv file. Once running, the
+     * thread will loop on the input queue awaiting meetin requests to be 
+     * added to the calendar. Once received, a response will be generated and
+     * added to the output queue. This thread will exit once it receives a signal
+     * via the input queue. To ensure data integrity, the current calendar will
+     * be backed up to a <employeeID>.dat.bak file which will list the meetings
+     * in chronological order.
      * 
-     *  1. Read the existing calendar from the employees file.
-     *  2. Reads a queue to receive meeting requests from the incoming message
-     *     request thread.
-     *  3. Process the meeting request.
-     *  4. Push the request to resultsOutputArray 
+     * Expected format of <employeeID>.dat and <employeeID>.dat.bak
+     * 
+     * "<description>","<location>",<localdatetime>,<duration>
      */
     public void run() {
-
+        // Read each line of the employee's data file and add it to the calendar.
         try {
-
-            // Read employees calendar information from <employee id>.dat
-            File calendarFile = new File(employee_id + ".dat");
+            File calendarFile   = new File(employeeID + ".dat");
             Scanner fileScanner = new Scanner(calendarFile);
 
+            // Each line of the data file should correspond to a meeting
             while (fileScanner.hasNextLine()) {
-
                 String   meetingInformationString = fileScanner.nextLine();
                 String[] meetingInformationArray  = meetingInformationString.split(",");
 
@@ -70,36 +91,39 @@ public class Employee extends Thread {
                                          Integer.valueOf(meetingInformationArray[3]));
             }
         } catch (FileNotFoundException e) {
-            System.out.println("An error occured when openining " + this.calendar_filename);
+            System.out.println("An error occured when openining " + this.calendarFilename);
         }
 
+        // Blocking on the incoming requests queue will prevent the infinite loop
+        // from wasting CPU cycles
         while (true) {
             try {
                 MeetingRequest mtgReq = (MeetingRequest)this.incomingRequests.take();
 
+                // A request_id serves as a signal that all data has been received,
+                // and that it is now safe to backup the data and exit.
                 if (mtgReq.request_id > 0) {
-
                     boolean added = calendar.AddMeeting(mtgReq.description, 
                                                         mtgReq.location, 
                                                         LocalDateTime.parse(mtgReq.datetime), 
                                                         mtgReq.duration);
 
+                    // Send a reponse message signaling whether the request was accepted or not
+                    // ArrayBlockingQueues are thread safe, so no need to worry about concurrently
+                    // puting requests on it.
+                    // https://stackoverflow.com/questions/26543807/is-blockingqueue-completely-thread-safe-in-java
                     if (added) {
-                        // Send response stating that the meeting was accepted
                         this.outgoingResponse.put(new MeetingResponse(mtgReq.request_id, 1));
                     }
                     else {
-                        // Send response stating that the meeting was rejected
                         this.outgoingResponse.put(new MeetingResponse(mtgReq.request_id, 0));
                     }
                 } else {
-
-                    // Back up the calendar and exit the loop
+                    // Gets a sorted array of the employee's calendar
                     Meeting[] meetingArray = calendar.GetCalendarArray();
 
                     try {
-                        // https://stackoverflow.com/a/52581496
-                        FileWriter fileWriter = new FileWriter(this.calendar_filename + ".bak");
+                        FileWriter fileWriter = new FileWriter(this.calendarFilename + ".bak");
 
                         for (Meeting meeting : meetingArray) {
                             fileWriter.write(meeting.description + "," + 
