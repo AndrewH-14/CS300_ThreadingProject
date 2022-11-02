@@ -11,27 +11,42 @@
 #include "meeting_request_formats.h"
 #include "queue_ids.h"
 
+// Macros to determine the maximum size that an input string can be
+#define REQUEST_ID_LENGTH 3
+#define DURATION_LENGTH   3
+#define COMMA_DELIMITERS  5
+#define MAX_LINE_LENGTH   (REQUEST_ID_LENGTH      + \
+                           EMP_ID_MAX_LENGTH      + \
+                           DESCRIPTION_MAX_LENGTH + \
+                           LOCATION_MAX_LENGTH    + \
+                           DURATION_LENGTH        + \
+                           COMMA_DELIMITERS)
+
 // Variables used to determine the system 5 queue that will be used
 int msqid;
 int msgflg = IPC_CREAT | 0666;
 key_t key;
 
 // An array to a line from stdin when reading in requests
-// TODO: Compute the maximum length
-char inputLine[100] = { 0 };
+char input_line[MAX_LINE_LENGTH] = { 0 };
 
-// Phread varibales that are used to ensure concurrency works correctly
+// Phread variables that are used to ensure concurrency works correctly
 pthread_mutex_t send_mutex;
 pthread_mutex_t receive_mutex;
-pthread_cond_t  cond        = PTHREAD_COND_INITIALIZER;
-volatile bool copy_complete = false;
-pthread_t requests[200];
 
-// A global thread of responses so that any thread can view it
-volatile int number_of_responses    = 0;
-volatile int current_response       = 0;
+pthread_cond_t  copy_cond     = PTHREAD_COND_INITIALIZER;
+volatile bool   copy_complete = false;
+
+pthread_t request_threads[200];
+
+// Global variables that will store information regarding responses
+volatile int number_of_responses = 0;
+volatile int current_response    = 0;
+
+// Global arrays regarding request responses that the threads will use to 
+// support concurrency
 meeting_response_buf responses[200] = { 0 };
-pthread_cond_t       response_conds[200];
+pthread_cond_t response_conds[200];
 
 // Thread functions that will be called by pthread_create()
 void * send_request(void * p_rbuf);
@@ -42,8 +57,6 @@ meeting_request_buf parse_request(char * p_request_string);
 
 /**
  * The main function for request_mtgs.c
- * 
- * @return 0 
  */
 int main(int argc, char *argv[])
 {
@@ -78,18 +91,27 @@ int main(int argc, char *argv[])
 #endif
 
     // Create a thread that will send a meeting request per line of stdin
-    while (fgets(inputLine, 100, stdin) != NULL)
+    while (fgets(input_line, MAX_LINE_LENGTH, stdin) != NULL)
     {
-        meeting_request_buf rbuf = parse_request(inputLine);
+#ifdef DEBUG
+        fprintf(stderr, "line read: %s", input_line);
+#endif
+        meeting_request_buf rbuf = parse_request(input_line);
 
         // Must use a mutex lock to ensure that the passed argument is copied over
         // to the thread's stack before overwritting the value
         pthread_mutex_lock(&send_mutex);
-        pthread_create(&requests[number_of_responses], NULL, send_request, (void *) &rbuf);
+#ifdef DEBUG 
+        fprintf(stderr, "Creating thread for request %d\n", rbuf.request_id);
+#endif
+        pthread_create(&request_threads[number_of_responses], NULL, send_request, (void *) &rbuf);
         while (!copy_complete)
         {
-            pthread_cond_wait(&cond, &send_mutex);
+            pthread_cond_wait(&copy_cond, &send_mutex);
         }
+#ifdef DEBUG
+        fprintf(stderr, "Copy for request %d successfully completed\n", rbuf.request_id);
+#endif
         copy_complete = false;
         pthread_mutex_unlock(&send_mutex);
 
@@ -113,7 +135,7 @@ int main(int argc, char *argv[])
     // program
     for (int request_thread_idx = 0; request_thread_idx < number_of_requests; request_thread_idx++)
     {
-        pthread_join(requests[request_thread_idx], NULL);
+        pthread_join(request_threads[request_thread_idx], NULL);
     }
 
     return 0;
@@ -131,8 +153,10 @@ int main(int argc, char *argv[])
 void * send_request(void * p_rbuf)
 {
     meeting_request_buf rbuf = *(meeting_request_buf *) p_rbuf;
+    pthread_mutex_lock(&send_mutex);
     copy_complete = true;
-    pthread_cond_signal(&cond);
+    pthread_mutex_unlock(&send_mutex);
+    pthread_cond_signal(&copy_cond);
 
     // Send a message.
     if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, IPC_NOWAIT)) < 0) {
@@ -142,12 +166,13 @@ void * send_request(void * p_rbuf)
         fprintf(stderr, "Error sending msg: %s\n", strerror( errnum ));
         exit(1);
     }
+#ifdef DEBUG
     else
     {
         fprintf(stderr,"msgsnd--mtg_req: reqid %d empid %s descr %s loc %s date %s duration %d \n",
-        rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
+                rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
     }
-
+#endif
     // If the request expects a response, block until it is received
     if (rbuf.request_id != 0)
     {
@@ -188,7 +213,12 @@ void * send_request(void * p_rbuf)
 }
 
 /**
- * Thread function that will 
+ * Thread function that will loop until reponses to all the requests have been
+ * received.
+ * 
+ * @note This thread will signal to the request threads via conditional variables.
+ * 
+ * @return NULL
  */
 void * receive_response()
 {
@@ -225,7 +255,10 @@ void * receive_response()
         } 
         while ((ret < 0 ) && (errno == 4) && (number_of_responses > 0));
 
+#ifdef DEBUG
         fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",rbuf.request_id,rbuf.avail);
+#endif
+        // Now waiting for one less reponse
         number_of_responses--;
     }
 
@@ -269,6 +302,11 @@ meeting_request_buf parse_request(char * p_request_string)
         DATETIME_LENGTH
     );
     rbuf.duration=atoi(strtok(NULL, deliminter));
+
+#ifdef DEBUG
+    fprintf(stderr, "Parsed information: request_id %d, empId %s, desc %s, loc %s, datetime %s, duration %d\n",
+            rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
+#endif
 
     return rbuf;
 }
