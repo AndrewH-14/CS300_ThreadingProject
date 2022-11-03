@@ -179,6 +179,7 @@ int main(int argc, char *argv[])
  */
 void * send_request(void * p_rbuf)
 {
+    current_response = 0;
     meeting_request_buf rbuf = *(meeting_request_buf *) p_rbuf;
     pthread_mutex_lock(&send_mutex);
     copy_complete = true;
