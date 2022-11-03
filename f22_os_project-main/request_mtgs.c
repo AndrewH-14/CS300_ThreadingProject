@@ -24,7 +24,7 @@
 
 #define MAX_INPUT_NUMBER 200
 
-// #define DEBUG
+//#define DEBUG
 
 // Variables used to determine the system 5 queue that will be used
 int msqid;
@@ -33,18 +33,16 @@ key_t key;
 
 // Phread variables that are used to ensure concurrency works correctly
 pthread_mutex_t send_mutex;
-pthread_mutex_t receive_mutex;
+pthread_mutex_t rbuf_copy_mutex;
+pthread_mutex_t handle_response_mutex;
 pthread_mutex_t send_last_msg_mutex;
 
-pthread_cond_t  copy_cond     = PTHREAD_COND_INITIALIZER;
-pthread_cond_t  pending_cond  = PTHREAD_COND_INITIALIZER;
+pthread_cond_t  copy_cond              = PTHREAD_COND_INITIALIZER;
 pthread_cond_t  ok_to_send_end_message = PTHREAD_COND_INITIALIZER;
-volatile bool   copy_complete = false;
+volatile bool   copy_complete          = false;
 
 // Global variables that will store information regarding responses
 volatile int current_response        = 0;
-volatile bool all_messages_sent      = false;
-volatile int pending_responses       = 0;
 volatile int requests_to_be_sent     = 0;
 
 // Global arrays regarding request responses that the threads will use to 
@@ -58,6 +56,7 @@ void * receive_response();
 
 // Helper functions
 meeting_request_buf parse_request(char * p_request_string);
+bool init_queue(void);
 
 /**
  * The main function for request_mtgs.c
@@ -72,11 +71,13 @@ int main(int argc, char *argv[])
     meeting_request_buf rbuf;
     rbuf.request_id = -1;
     pthread_t threads[MAX_INPUT_NUMBER + 1];
+    current_response = 0;
 
     // Initialize pthread mutex variables that will be used to support concurrency
     pthread_mutex_init(&send_mutex, NULL);
-    pthread_mutex_init(&receive_mutex, NULL);
+    pthread_mutex_init(&handle_response_mutex, NULL);
     pthread_mutex_init(&send_last_msg_mutex, NULL);
+    pthread_mutex_init(&rbuf_copy_mutex, NULL);
 
     // Initialize the pthread conditional variables that the threads will wait on.
     for (int idx = 0; idx < 200; idx++)
@@ -84,86 +85,55 @@ int main(int argc, char *argv[])
         pthread_cond_init(&response_conds[idx], NULL);
     }
 
-    // Set up the system 5 queue that will be used to send and receive messages
-    // Note: Code copied from msgsnd_mtg_request.c
-    key = ftok(FILE_IN_HOME_DIR,QUEUE_NUMBER);
-    if (key == 0xffffffff) {
-        fprintf(stderr,"Key cannot be 0xffffffff..fix queue_ids.h to link to existing file\n");
-        return 1;
-    }
-    if ((msqid = msgget(key, msgflg)) < 0) {
-        int errnum = errno;
-        fprintf(stderr, "Value of errno: %d\n", errno);
-        perror("(msgget)");
-        fprintf(stderr, "Error msgget: %s\n", strerror( errnum ));
-    }
-#ifdef DEBUG
-    else
-        fprintf(stderr, "msgget: msgget succeeded: msgqid = %d\n", msqid);
-#endif
+    // Initialize queue and exit if it fails
+    if (!init_queue()) { return 1; }
 
     // Create a single thread to read the responses from the message queue
     pthread_t receiver_thread;
     pthread_create(&receiver_thread, NULL, receive_response, NULL);
 
-    // Create a thread that will send a meeting request per line of stdin
+    // Loop until we have received the last request to be sent.
     while (rbuf.request_id != 0)
     {
+        // Get the next line from stdin
         fgets(input_line, MAX_LINE_LENGTH, stdin);
+        #ifdef DEBUG
+            fprintf(stderr, "line read: %s", input_line);
+        #endif
 
-        num_created_threads++;
-
-#ifdef DEBUG
-        fprintf(stderr, "line read: %s", input_line);
-#endif
+        // Convert the read string into a request buf to be sent
         rbuf = parse_request(input_line);
-
-        // This lock and variable update must be before the thread is actually
-        // created to avoid the race condition where a thead is sent and 
-        // received before the before the variables are updated
-        pthread_mutex_lock(&receive_mutex);
-        if (rbuf.request_id == 0)
-        {
-            all_messages_sent = true;
-        }
-        else
-        {
-            // Record the number of requests that are waiting on responses.
-            pending_responses++;
-        }
-        pthread_cond_signal(&pending_cond);
-        pthread_mutex_unlock(&receive_mutex);
 
         pthread_mutex_lock(&send_last_msg_mutex);
         requests_to_be_sent++;
         pthread_mutex_unlock(&send_last_msg_mutex);
 
-        // Must use a mutex lock to ensure that the passed argument is copied over
-        // to the thread's stack before overwritting the value. This mutex will be
-        // unlocked in the thread.
-        pthread_mutex_lock(&send_mutex);
-#ifdef DEBUG 
-        fprintf(stderr, "Creating thread for request %d\n", rbuf.request_id);
-#endif
+        #ifdef DEBUG 
+            fprintf(stderr, "Creating thread for request %d\n", rbuf.request_id);
+        #endif
+
+        // Must wait for the rbuf value to be copied over to the thread before creating the next one
+        pthread_mutex_lock(&rbuf_copy_mutex);
         pthread_create(&threads[rbuf.request_id - 1], NULL, send_request, (void *) &rbuf);
         while (!copy_complete)
         {
-            pthread_cond_wait(&copy_cond, &send_mutex);
+            pthread_cond_wait(&copy_cond, &rbuf_copy_mutex);
         }
         copy_complete = false;
-        pthread_mutex_unlock(&send_mutex);
-#ifdef DEBUG
-        fprintf(stderr, "Copy for request %d successfully completed\n", rbuf.request_id);
-#endif
+        pthread_mutex_unlock(&rbuf_copy_mutex);
+
+        #ifdef DEBUG
+            fprintf(stderr, "Copy for request %d successfully completed\n", rbuf.request_id);
+        #endif
+
+        num_created_threads++;
     }
 
-
     // Ensure that all threads have ended before closing
-    for (int thread_idx = 0; thread_idx < requests_to_be_sent; thread_idx++)
+    for (int thread_idx = 0; thread_idx < num_created_threads; thread_idx++)
     {
         pthread_join(threads[thread_idx], NULL);
     }
-    pthread_join(receiver_thread, NULL);
 
     return 0;
 }
@@ -179,15 +149,16 @@ int main(int argc, char *argv[])
  */
 void * send_request(void * p_rbuf)
 {
-    current_response = 0;
+    // Copy the rbuf to this threads stack, and then signal to the main
+    // thread that it can continue.
+    pthread_mutex_lock(&rbuf_copy_mutex);
     meeting_request_buf rbuf = *(meeting_request_buf *) p_rbuf;
-    pthread_mutex_lock(&send_mutex);
     copy_complete = true;
-    pthread_mutex_unlock(&send_mutex);
     pthread_cond_signal(&copy_cond);
+    pthread_mutex_unlock(&rbuf_copy_mutex);
 
-    // Ensure that all other messages have already been sent before sending
-    // the ending message
+    // If attempting to send the final message, first check to make sure there are
+    // no other pending messages to be sent in other threads.
     pthread_mutex_lock(&send_last_msg_mutex);
     if ((rbuf.request_id == 0) && (requests_to_be_sent > 1))
     {
@@ -211,6 +182,9 @@ void * send_request(void * p_rbuf)
     }
 #endif
 
+    // Update the number of requests that still need to be sent and send a signal
+    // in case the last message was blocked. If no thread is waiting for this signal
+    // nothing should happen.
     pthread_mutex_lock(&send_last_msg_mutex);
     requests_to_be_sent--;
     pthread_cond_signal(&ok_to_send_end_message);
@@ -223,12 +197,12 @@ void * send_request(void * p_rbuf)
         // when accessed. This also needs to include the print statements to ensure that
         // they are printed before allowing another thread to execute, creating a race
         // condition as to which print statement executes first.
-        pthread_mutex_lock(&receive_mutex);
+        pthread_mutex_lock(&handle_response_mutex);
         while(responses[rbuf.request_id - 1].request_id == 0) //< Wait until the response has been received
         {
             // Put this thread to sleep until the receiver signals that a new response has been received,
             // and this request is the next one to be printed.
-            pthread_cond_wait(&response_conds[rbuf.request_id - 1], &receive_mutex);
+            pthread_cond_wait(&response_conds[rbuf.request_id - 1], &handle_response_mutex);
         }
 
         if (responses[rbuf.request_id - 1].avail == 1)
@@ -247,11 +221,11 @@ void * send_request(void * p_rbuf)
         printf("%d\n", current_response);
 
         // If the next response has already been received, then signal the thread to wake up
-        if (responses[current_response].request_id != 0)
+        if ((current_response < MAX_INPUT_NUMBER) && (responses[current_response].request_id != 0))
         {
             pthread_cond_signal(&response_conds[current_response]);
         }
-        pthread_mutex_unlock(&receive_mutex);
+        pthread_mutex_unlock(&handle_response_mutex);
     }
     return NULL;
 }
@@ -270,51 +244,37 @@ void * receive_response()
     int ret;
     meeting_response_buf rbuf = { 0 };
 
-    // Loop until we until every response has been sent and it's response has been received. This section
-    // must be in a lock to avoid the race condition where a thread is about to print the last response,
-    // but current_response has not been incremented yet. Without this, msgrcv could start blocking for a 
-    // message that will not be sent.
-    pthread_mutex_lock(&receive_mutex);
-    while (!all_messages_sent)
+    while (true)
     {
-        while ((pending_responses == 0) && !all_messages_sent)
+        do 
         {
-            pthread_cond_wait(&pending_cond, &receive_mutex);
-        }
+            // Block until a message type 1 message is received
+            ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);
 
-        while (pending_responses > 0)
-        {
-            pthread_mutex_unlock(&receive_mutex);
-
-            do 
+            // Store the reponse in the global array so that it can be accessed by the threads.
+            // Then signal to the thread that it's response has been received. This must be in
+            // a locked section to avoid a race condition where current_response is about to be
+            // updated by another thread.
+            pthread_mutex_lock(&handle_response_mutex);
+            responses[rbuf.request_id - 1] = rbuf;
+            if ((rbuf.request_id - 1) == current_response)
             {
-                // Block until a message type 1 message is received
-                ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);
-
-                // Store the reponse in the global array so that it can be accessed by the threads.
-                // Then signal to the thread that it's response has been received. This must be in
-                // a locked section to avoid a race condition where current_response is about to be
-                // updated by another thread.
-                pthread_mutex_lock(&receive_mutex);
-                responses[rbuf.request_id - 1] = rbuf;
                 pthread_cond_signal(&response_conds[current_response]);
-                pending_responses--;
-                pthread_mutex_unlock(&receive_mutex);
+            }
+            pthread_mutex_unlock(&handle_response_mutex);
 
-                int errnum = errno;
-                if (ret < 0 && errno !=EINTR)
-                {
-                    fprintf(stderr, "Value of errno: %d\n", errno);
-                    perror("Error printed by perror");
-                    fprintf(stderr, "Error receiving msg: %s\n", strerror( errnum ));
-                }
-            } 
-            while ((ret < 0 ) && (errno == 4));
-
+            int errnum = errno;
+            if (ret < 0 && errno !=EINTR)
+            {
+                fprintf(stderr, "Value of errno: %d\n", errno);
+                perror("Error printed by perror");
+                fprintf(stderr, "Error receiving msg: %s\n", strerror( errnum ));
+            }
+        } 
+        while ((ret < 0 ) && (errno == 4));
 #ifdef DEBUG
             fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",rbuf.request_id,rbuf.avail);
 #endif
-        }
     }
 
     return NULL;
@@ -382,4 +342,33 @@ meeting_request_buf parse_request(char * p_request_string)
 #endif
 
     return rbuf;
+}
+
+/**
+ * Function that initializes the System V message queue that will be used
+ * to send and receive data. 
+ * 
+ * @retval true  Success
+ * @retval false Failure
+ */
+bool init_queue(void)
+{
+    // Set up the system 5 queue that will be used to send and receive messages
+    // Note: Code copied from msgsnd_mtg_request.c
+    key = ftok(FILE_IN_HOME_DIR,QUEUE_NUMBER);
+    if (key == 0xffffffff) {
+        fprintf(stderr,"Key cannot be 0xffffffff..fix queue_ids.h to link to existing file\n");
+        return false;
+    }
+    if ((msqid = msgget(key, msgflg)) < 0) {
+        int errnum = errno;
+        fprintf(stderr, "Value of errno: %d\n", errno);
+        perror("(msgget)");
+        fprintf(stderr, "Error msgget: %s\n", strerror( errnum ));
+    }
+#ifdef DEBUG
+    else
+        fprintf(stderr, "msgget: msgget succeeded: msgqid = %d\n", msqid);
+#endif
+    return true;
 }
