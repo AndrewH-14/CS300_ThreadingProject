@@ -129,6 +129,8 @@ int main(int argc, char *argv[])
         num_created_threads++;
     }
 
+    printf("Joining threads\n");
+
     // Ensure that all threads have ended before closing
     for (int thread_idx = 0; thread_idx < num_created_threads; thread_idx++)
     {
@@ -226,6 +228,8 @@ void * send_request(void * p_rbuf)
             pthread_cond_signal(&response_conds[current_response]);
         }
         pthread_mutex_unlock(&handle_response_mutex);
+
+        printf("Exiting thread: %d\n", rbuf.request_id);
     }
     return NULL;
 }
