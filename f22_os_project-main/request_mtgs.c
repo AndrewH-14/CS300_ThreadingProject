@@ -24,7 +24,7 @@
 
 #define MAX_INPUT_NUMBER 200
 
-#define DEBUG
+// #define DEBUG
 
 // Variables used to determine the system 5 queue that will be used
 int msqid;
@@ -67,10 +67,11 @@ int main(int argc, char *argv[])
     // An array to a line from stdin when reading in requests
     char input_line[MAX_LINE_LENGTH] = { 0 };
 
-    int number_of_requests = 0;
+    // Used to keep track of how many threads we need to wait on
+    int num_created_threads = 0;
     meeting_request_buf rbuf;
     rbuf.request_id = -1;
-    pthread_t p;
+    pthread_t threads[MAX_INPUT_NUMBER + 1];
 
     // Initialize pthread mutex variables that will be used to support concurrency
     pthread_mutex_init(&send_mutex, NULL);
@@ -110,6 +111,8 @@ int main(int argc, char *argv[])
     {
         fgets(input_line, MAX_LINE_LENGTH, stdin);
 
+        num_created_threads++;
+
 #ifdef DEBUG
         fprintf(stderr, "line read: %s", input_line);
 #endif
@@ -142,12 +145,10 @@ int main(int argc, char *argv[])
 #ifdef DEBUG 
         fprintf(stderr, "Creating thread for request %d\n", rbuf.request_id);
 #endif
-        pthread_create(&p, NULL, send_request, (void *) &rbuf);
+        pthread_create(&threads[rbuf.request_id - 1], NULL, send_request, (void *) &rbuf);
         while (!copy_complete)
         {
-            printf("Waiting...\n");
             pthread_cond_wait(&copy_cond, &send_mutex);
-            printf("Wait complete\n");
         }
         copy_complete = false;
         pthread_mutex_unlock(&send_mutex);
@@ -156,9 +157,12 @@ int main(int argc, char *argv[])
 #endif
     }
 
-    // Should only need to join the receiver thread to the main thread since the 
-    // the receiver thread will run until all the messages have been sent and 
-    // their responses received.
+
+    // Ensure that all threads have ended before closing
+    for (int thread_idx = 0; thread_idx < requests_to_be_sent; thread_idx++)
+    {
+        pthread_join(threads[thread_idx], NULL);
+    }
     pthread_join(receiver_thread, NULL);
 
     return 0;
@@ -191,8 +195,7 @@ void * send_request(void * p_rbuf)
     pthread_mutex_unlock(&send_last_msg_mutex);
 
     // Send a message.
-    printf("Hello World\n");
-    if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, 0)) < 0) {
+    if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, IPC_NOWAIT)) < 0) {
         int errnum = errno;
         fprintf(stderr,"%d, %ld, %d, %ld\n", msqid, rbuf.mtype, rbuf.request_id, SEND_BUFFER_LENGTH);
         perror("(msgsnd)");
@@ -305,8 +308,6 @@ void * receive_response()
                 }
             } 
             while ((ret < 0 ) && (errno == 4));
-
-
 
 #ifdef DEBUG
             fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",rbuf.request_id,rbuf.avail);
