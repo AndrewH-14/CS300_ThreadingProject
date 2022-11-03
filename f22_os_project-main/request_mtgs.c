@@ -24,15 +24,12 @@
 
 #define MAX_INPUT_NUMBER 200
 
-//#define DEBUG
+#define DEBUG
 
 // Variables used to determine the system 5 queue that will be used
 int msqid;
 int msgflg = IPC_CREAT | 0666;
 key_t key;
-
-// An array to a line from stdin when reading in requests
-char input_line[MAX_LINE_LENGTH] = { 0 };
 
 // Phread variables that are used to ensure concurrency works correctly
 pthread_mutex_t send_mutex;
@@ -67,6 +64,9 @@ meeting_request_buf parse_request(char * p_request_string);
  */
 int main(int argc, char *argv[])
 {
+    // An array to a line from stdin when reading in requests
+    char input_line[MAX_LINE_LENGTH] = { 0 };
+
     int number_of_requests = 0;
     meeting_request_buf rbuf;
     rbuf.request_id = -1;
@@ -145,14 +145,15 @@ int main(int argc, char *argv[])
         pthread_create(&p, NULL, send_request, (void *) &rbuf);
         while (!copy_complete)
         {
+            printf("Waiting...\n");
             pthread_cond_wait(&copy_cond, &send_mutex);
+            printf("Wait complete\n");
         }
+        copy_complete = false;
+        pthread_mutex_unlock(&send_mutex);
 #ifdef DEBUG
         fprintf(stderr, "Copy for request %d successfully completed\n", rbuf.request_id);
 #endif
-        copy_complete = false;
-        pthread_mutex_unlock(&send_mutex);
-
     }
 
     // Should only need to join the receiver thread to the main thread since the 
@@ -180,17 +181,18 @@ void * send_request(void * p_rbuf)
     pthread_mutex_unlock(&send_mutex);
     pthread_cond_signal(&copy_cond);
 
+    // Ensure that all other messages have already been sent before sending
+    // the ending message
     pthread_mutex_lock(&send_last_msg_mutex);
     if ((rbuf.request_id == 0) && (requests_to_be_sent > 1))
     {
-        printf("Hello\n");
         pthread_cond_wait(&ok_to_send_end_message, &send_last_msg_mutex);
-        printf("World\n");
     }
     pthread_mutex_unlock(&send_last_msg_mutex);
 
     // Send a message.
-    if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, IPC_NOWAIT)) < 0) {
+    printf("Hello World\n");
+    if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, 0)) < 0) {
         int errnum = errno;
         fprintf(stderr,"%d, %ld, %d, %ld\n", msqid, rbuf.mtype, rbuf.request_id, SEND_BUFFER_LENGTH);
         perror("(msgsnd)");
@@ -204,6 +206,7 @@ void * send_request(void * p_rbuf)
                 rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
     }
 #endif
+
     pthread_mutex_lock(&send_last_msg_mutex);
     requests_to_be_sent--;
     pthread_cond_signal(&ok_to_send_end_message);
