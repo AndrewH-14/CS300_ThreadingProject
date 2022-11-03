@@ -132,7 +132,7 @@ int main(int argc, char *argv[])
     printf("Joining threads\n");
 
     // Ensure that all threads have ended before closing
-    for (int thread_idx = 0; thread_idx < num_created_threads; thread_idx++)
+    for (int thread_idx = 0; thread_idx < num_created_threads - 1; thread_idx++)
     {
         pthread_join(threads[thread_idx], NULL);
     }
