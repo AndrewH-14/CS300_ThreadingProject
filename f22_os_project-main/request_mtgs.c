@@ -49,7 +49,7 @@ volatile int requests_to_be_sent     = 0;
 
 // Global arrays regarding request responses that the threads will use to 
 // support concurrency
-meeting_response_buf responses[200] = { 0 };
+meeting_response_buf responses[200] = {{ 0 }};
 pthread_cond_t response_conds[200];
 
 // Thread functions that will be called by pthread_create()
