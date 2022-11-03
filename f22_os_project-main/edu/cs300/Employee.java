@@ -85,6 +85,18 @@ public class Employee extends Thread {
                 String   meetingInformationString = fileScanner.nextLine();
                 String[] meetingInformationArray  = meetingInformationString.split(",");
 
+                // Method for removing leading a trailing quotation marks gotten from:
+                // https://www.baeldung.com/java-remove-start-end-double-quote
+                if (meetingInformationArray[0] != null && meetingInformationArray[0].length() >= 2 
+                    && meetingInformationArray[0].charAt(0) == '\"' && meetingInformationArray[0].charAt(meetingInformationArray[0].length() - 1) == '\"') {
+                    meetingInformationArray[0] = meetingInformationArray[0].substring(1, meetingInformationArray[0].length() - 1);
+                }
+
+                if (meetingInformationArray[1] != null && meetingInformationArray[1].length() >= 2 
+                    && meetingInformationArray[1].charAt(0) == '\"' && meetingInformationArray[1].charAt(meetingInformationArray[1].length() - 1) == '\"') {
+                    meetingInformationArray[1] = meetingInformationArray[1].substring(1, meetingInformationArray[1].length() - 1);
+                }
+
                 this.calendar.AddMeeting(meetingInformationArray[0],
                                          meetingInformationArray[1],
                                          LocalDateTime.parse(meetingInformationArray[2]),
@@ -126,10 +138,10 @@ public class Employee extends Thread {
                         FileWriter fileWriter = new FileWriter(this.calendarFilename + ".bak");
 
                         for (Meeting meeting : meetingArray) {
-                            fileWriter.write(meeting.description + "," + 
-                                             meeting.location    + "," + 
-                                             meeting.time        + "," + 
-                                             meeting.duration    + "\n");
+                            fileWriter.write("\"" + meeting.description + "\"" + "," +
+                                             "\"" + meeting.location    + "\"" + "," + 
+                                                    meeting.time               + "," + 
+                                                    meeting.duration           + "\n");
                         }
 
                         fileWriter.close();

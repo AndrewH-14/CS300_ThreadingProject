@@ -22,6 +22,10 @@
                            DURATION_LENGTH        + \
                            COMMA_DELIMITERS)
 
+#define MAX_INPUT_NUMBER 200
+
+//#define DEBUG
+
 // Variables used to determine the system 5 queue that will be used
 int msqid;
 int msgflg = IPC_CREAT | 0666;
@@ -33,15 +37,18 @@ char input_line[MAX_LINE_LENGTH] = { 0 };
 // Phread variables that are used to ensure concurrency works correctly
 pthread_mutex_t send_mutex;
 pthread_mutex_t receive_mutex;
+pthread_mutex_t send_last_msg_mutex;
 
 pthread_cond_t  copy_cond     = PTHREAD_COND_INITIALIZER;
+pthread_cond_t  pending_cond  = PTHREAD_COND_INITIALIZER;
+pthread_cond_t  ok_to_send_end_message = PTHREAD_COND_INITIALIZER;
 volatile bool   copy_complete = false;
 
-pthread_t request_threads[200];
-
 // Global variables that will store information regarding responses
-volatile int number_of_responses = 0;
-volatile int current_response    = 0;
+volatile int current_response        = 0;
+volatile bool all_messages_sent      = false;
+volatile int pending_responses       = 0;
+volatile int requests_to_be_sent     = 0;
 
 // Global arrays regarding request responses that the threads will use to 
 // support concurrency
@@ -61,10 +68,14 @@ meeting_request_buf parse_request(char * p_request_string);
 int main(int argc, char *argv[])
 {
     int number_of_requests = 0;
+    meeting_request_buf rbuf;
+    rbuf.request_id = -1;
+    pthread_t p;
 
     // Initialize pthread mutex variables that will be used to support concurrency
     pthread_mutex_init(&send_mutex, NULL);
     pthread_mutex_init(&receive_mutex, NULL);
+    pthread_mutex_init(&send_last_msg_mutex, NULL);
 
     // Initialize the pthread conditional variables that the threads will wait on.
     for (int idx = 0; idx < 200; idx++)
@@ -90,21 +101,48 @@ int main(int argc, char *argv[])
         fprintf(stderr, "msgget: msgget succeeded: msgqid = %d\n", msqid);
 #endif
 
+    // Create a single thread to read the responses from the message queue
+    pthread_t receiver_thread;
+    pthread_create(&receiver_thread, NULL, receive_response, NULL);
+
     // Create a thread that will send a meeting request per line of stdin
-    while (fgets(input_line, MAX_LINE_LENGTH, stdin) != NULL)
+    while (rbuf.request_id != 0)
     {
+        fgets(input_line, MAX_LINE_LENGTH, stdin);
+
 #ifdef DEBUG
         fprintf(stderr, "line read: %s", input_line);
 #endif
-        meeting_request_buf rbuf = parse_request(input_line);
+        rbuf = parse_request(input_line);
+
+        // This lock and variable update must be before the thread is actually
+        // created to avoid the race condition where a thead is sent and 
+        // received before the before the variables are updated
+        pthread_mutex_lock(&receive_mutex);
+        if (rbuf.request_id == 0)
+        {
+            all_messages_sent = true;
+        }
+        else
+        {
+            // Record the number of requests that are waiting on responses.
+            pending_responses++;
+        }
+        pthread_cond_signal(&pending_cond);
+        pthread_mutex_unlock(&receive_mutex);
+
+        pthread_mutex_lock(&send_last_msg_mutex);
+        requests_to_be_sent++;
+        pthread_mutex_unlock(&send_last_msg_mutex);
 
         // Must use a mutex lock to ensure that the passed argument is copied over
-        // to the thread's stack before overwritting the value
+        // to the thread's stack before overwritting the value. This mutex will be
+        // unlocked in the thread.
         pthread_mutex_lock(&send_mutex);
 #ifdef DEBUG 
         fprintf(stderr, "Creating thread for request %d\n", rbuf.request_id);
 #endif
-        pthread_create(&request_threads[number_of_responses], NULL, send_request, (void *) &rbuf);
+        pthread_create(&p, NULL, send_request, (void *) &rbuf);
         while (!copy_complete)
         {
             pthread_cond_wait(&copy_cond, &send_mutex);
@@ -115,28 +153,12 @@ int main(int argc, char *argv[])
         copy_complete = false;
         pthread_mutex_unlock(&send_mutex);
 
-        // Record the number of responses that have been received. This value
-        // will let us know when we have received all of the responses, and can
-        // exit the program. This value will be decremented as responses are 
-        // received.
-        number_of_responses++;
-
-        // Record the number of requests made. This will be used to ensure that
-        // all responses are recorded. This value will NOT be decremented.
-        number_of_requests++;
     }
 
-    // Create a single thread to read the responses from the message queue
-    pthread_t receiver_thread;
-    pthread_create(&receiver_thread, NULL, receive_response, NULL);
-
-    // Once all of the request threads have completed, we know that all of the 
-    // reponses have been received and printed, therefore we can now exit the
-    // program
-    for (int request_thread_idx = 0; request_thread_idx < number_of_requests; request_thread_idx++)
-    {
-        pthread_join(request_threads[request_thread_idx], NULL);
-    }
+    // Should only need to join the receiver thread to the main thread since the 
+    // the receiver thread will run until all the messages have been sent and 
+    // their responses received.
+    pthread_join(receiver_thread, NULL);
 
     return 0;
 }
@@ -158,6 +180,15 @@ void * send_request(void * p_rbuf)
     pthread_mutex_unlock(&send_mutex);
     pthread_cond_signal(&copy_cond);
 
+    pthread_mutex_lock(&send_last_msg_mutex);
+    if ((rbuf.request_id == 0) && (requests_to_be_sent > 1))
+    {
+        printf("Hello\n");
+        pthread_cond_wait(&ok_to_send_end_message, &send_last_msg_mutex);
+        printf("World\n");
+    }
+    pthread_mutex_unlock(&send_last_msg_mutex);
+
     // Send a message.
     if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, IPC_NOWAIT)) < 0) {
         int errnum = errno;
@@ -173,6 +204,11 @@ void * send_request(void * p_rbuf)
                 rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
     }
 #endif
+    pthread_mutex_lock(&send_last_msg_mutex);
+    requests_to_be_sent--;
+    pthread_cond_signal(&ok_to_send_end_message);
+    pthread_mutex_unlock(&send_last_msg_mutex);
+
     // If the request expects a response, block until it is received
     if (rbuf.request_id != 0)
     {
@@ -226,40 +262,53 @@ void * receive_response()
     int ret;
     meeting_response_buf rbuf = { 0 };
 
-    // A response will not be sent for a message with request_id == 0
-    number_of_responses = number_of_responses - 1;
-
-    // Loop until we have received a response for each request sent
-    while (number_of_responses > 0)
+    // Loop until we until every response has been sent and it's response has been received. This section
+    // must be in a lock to avoid the race condition where a thread is about to print the last response,
+    // but current_response has not been incremented yet. Without this, msgrcv could start blocking for a 
+    // message that will not be sent.
+    pthread_mutex_lock(&receive_mutex);
+    while (!all_messages_sent)
     {
-        do 
+        while ((pending_responses == 0) && !all_messages_sent)
         {
-            // Block until a message type 1 message is received
-            ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);
+            pthread_cond_wait(&pending_cond, &receive_mutex);
+        }
 
-            // Store the reponse in the global array so that it can be accessed by the threads.
-            // Then signal to the thread that it's response has been received. This must be in
-            // a locked section in case a thread is attempting to update current_response.
-            pthread_mutex_lock(&receive_mutex);
-            responses[rbuf.request_id - 1] = rbuf;
-            pthread_cond_signal(&response_conds[current_response]);
+        while (pending_responses > 0)
+        {
             pthread_mutex_unlock(&receive_mutex);
 
-            int errnum = errno;
-            if (ret < 0 && errno !=EINTR)
+            do 
             {
-                fprintf(stderr, "Value of errno: %d\n", errno);
-                perror("Error printed by perror");
-                fprintf(stderr, "Error receiving msg: %s\n", strerror( errnum ));
-            }
-        } 
-        while ((ret < 0 ) && (errno == 4) && (number_of_responses > 0));
+                // Block until a message type 1 message is received
+                ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);
+
+                // Store the reponse in the global array so that it can be accessed by the threads.
+                // Then signal to the thread that it's response has been received. This must be in
+                // a locked section to avoid a race condition where current_response is about to be
+                // updated by another thread.
+                pthread_mutex_lock(&receive_mutex);
+                responses[rbuf.request_id - 1] = rbuf;
+                pthread_cond_signal(&response_conds[current_response]);
+                pending_responses--;
+                pthread_mutex_unlock(&receive_mutex);
+
+                int errnum = errno;
+                if (ret < 0 && errno !=EINTR)
+                {
+                    fprintf(stderr, "Value of errno: %d\n", errno);
+                    perror("Error printed by perror");
+                    fprintf(stderr, "Error receiving msg: %s\n", strerror( errnum ));
+                }
+            } 
+            while ((ret < 0 ) && (errno == 4));
+
+
 
 #ifdef DEBUG
-        fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",rbuf.request_id,rbuf.avail);
+            fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",rbuf.request_id,rbuf.avail);
 #endif
-        // Now waiting for one less reponse
-        number_of_responses--;
+        }
     }
 
     return NULL;
@@ -289,13 +338,31 @@ meeting_request_buf parse_request(char * p_request_string)
     strncpy(
         rbuf.description_string,
         strtok(NULL, deliminter),
-        DESCRIPTION_MAX_LENGTH
+        DESCRIPTION_FIELD_LENGTH
     );
+    memmove(rbuf.description_string, &rbuf.description_string[1], DESCRIPTION_FIELD_LENGTH - 1);
+    for (int char_idx = 0; char_idx < DESCRIPTION_FIELD_LENGTH - 1; char_idx++)
+    {
+        if (rbuf.description_string[char_idx + 1] == '\0')
+        {
+            rbuf.description_string[char_idx] = '\0';
+            break;
+        }
+    }
     strncpy(
         rbuf.location_string,
         strtok(NULL, deliminter),
-        LOCATION_MAX_LENGTH
+        LOCATION_FIELD_LENGTH
     );
+    memmove(rbuf.location_string, &rbuf.location_string[1], LOCATION_FIELD_LENGTH - 1);
+    for (int char_idx = 0; char_idx < LOCATION_FIELD_LENGTH - 1; char_idx++)
+    {
+        if (rbuf.location_string[char_idx + 1] == '\0')
+        {
+            rbuf.location_string[char_idx] = '\0';
+            break;
+        }
+    }
     strncpy(
         rbuf.datetime,
         strtok(NULL, deliminter),
