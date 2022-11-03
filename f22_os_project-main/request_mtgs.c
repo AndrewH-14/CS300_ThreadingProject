@@ -243,6 +243,7 @@ void * send_request(void * p_rbuf)
 
         // Update the response that needs to be printed next
         current_response++;
+        printf("%d\n", current_response);
 
         // If the next response has already been received, then signal the thread to wake up
         if (responses[current_response].request_id != 0)
