@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -13,7 +14,6 @@
 
 // Macro to convert max length to a string for use in scanf
 // https://stackoverflow.com/a/3301451
-#define MAX_STRING_LENGTH 20
 #define STRINGIFY(x) STRINGIFY2(x)
 #define STRINGIFY2(x) #x
 
@@ -73,14 +73,14 @@ int main(int argc, char *argv[])
     rbuf.request_id         = -1;
 
     // Initialize pthread mutex variables that will be used to support concurrency
-    pthread_mutex_init(&handle_response_mutex, NULL);
-    pthread_mutex_init(&send_last_msg_mutex, NULL);
-    pthread_mutex_init(&rbuf_copy_mutex, NULL);
+    assert(0 == pthread_mutex_init(&handle_response_mutex, NULL));
+    assert(0 == pthread_mutex_init(&send_last_msg_mutex, NULL));
+    assert(0 == pthread_mutex_init(&rbuf_copy_mutex, NULL));
 
     // Initialize the pthread conditional variables that the request threads will wait on.
     for (int idx = 0; idx < 200; idx++)
     {
-        pthread_cond_init(&response_conds[idx], NULL);
+        assert(0 == pthread_cond_init(&response_conds[idx], NULL));
     }
 
     // Initialize queue and exit if it fails
@@ -88,22 +88,32 @@ int main(int argc, char *argv[])
 
     // Create a single thread to read the responses from the message queue
     pthread_t p;
-    pthread_create(&p, NULL, receiver_thread, NULL);
+    assert(0 == pthread_create(&p, NULL, receiver_thread, NULL));
 
     // Loop until we have received the last request to be sent.
     while (rbuf.request_id != 0)
     {
-        // Get the next line from stdin
+        // Read in the request from stdin and directly add it to
+        // the meeting request struct
         // https://stackoverflow.com/a/15091406
         rbuf.mtype = 2;
-        scanf("%d,%"STRINGIFY(EMP_ID_MAX_LENGTH)"[^,],%"STRINGIFY(DESCRIPTION_MAX_LENGTH)"[^,],%"STRINGIFY(LOCATION_MAX_LENGTH)"[^,],%"STRINGIFY(DATETIME_LENGTH)"[^,],%d",
-              &rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, &rbuf.duration);
+        scanf("%d,%"
+              STRINGIFY(EMP_ID_MAX_LENGTH)"[^,],%"
+              STRINGIFY(DESCRIPTION_MAX_LENGTH)"[^,],%"
+              STRINGIFY(LOCATION_MAX_LENGTH)"[^,],%"
+              STRINGIFY(DATETIME_LENGTH)"[^,],%d",
+              &rbuf.request_id, 
+              rbuf.empId, 
+              rbuf.description_string, 
+              rbuf.location_string, 
+              rbuf.datetime, 
+              &rbuf.duration);
         remove_quotes(rbuf.location_string, LOCATION_FIELD_LENGTH);
         remove_quotes(rbuf.description_string, DESCRIPTION_FIELD_LENGTH);
 
-        pthread_mutex_lock(&send_last_msg_mutex);
+        assert(0 == pthread_mutex_lock(&send_last_msg_mutex));
         requests_to_be_sent++;
-        pthread_mutex_unlock(&send_last_msg_mutex);
+        assert(0 == pthread_mutex_unlock(&send_last_msg_mutex));
 
         #ifdef DEBUG 
             fprintf(stderr, "Creating thread for request %d\n", rbuf.request_id);
@@ -111,14 +121,14 @@ int main(int argc, char *argv[])
 
         // Must wait for the rbuf value to be copied over to the thread before creating the next one
         // https://stackoverflow.com/questions/19372973/passing-multiple-variables-to-pthread-in-a-loop-arguments-get-overwritten-next
-        pthread_mutex_lock(&rbuf_copy_mutex);
-        pthread_create(&threads[rbuf.request_id - 1], NULL, request_thread, (void *) &rbuf);
+        assert(0 == pthread_mutex_lock(&rbuf_copy_mutex));
+        assert(0 == pthread_create(&threads[rbuf.request_id - 1], NULL, request_thread, (void *) &rbuf));
         while (!copy_complete)
         {
-            pthread_cond_wait(&copy_cond, &rbuf_copy_mutex);
+            assert(0 == pthread_cond_wait(&copy_cond, &rbuf_copy_mutex));
         }
         copy_complete = false;
-        pthread_mutex_unlock(&rbuf_copy_mutex);
+        assert(0 == pthread_mutex_unlock(&rbuf_copy_mutex));
 
         #ifdef DEBUG
             fprintf(stderr, "Copy for request %d successfully completed\n", rbuf.request_id);
@@ -133,7 +143,7 @@ int main(int argc, char *argv[])
     // Once all of the request threads have ended, it is safe to exit the program
     for (int thread_idx = 0; thread_idx < num_created_threads - 1; thread_idx++)
     {
-        pthread_join(threads[thread_idx], NULL);
+        assert(0 == pthread_join(threads[thread_idx], NULL));
     }
 
     return 0;
@@ -152,44 +162,46 @@ void * request_thread(void * p_rbuf)
 {
     // Copy the rbuf to this threads stack, and then signal to the main
     // thread that it can continue.
-    pthread_mutex_lock(&rbuf_copy_mutex);
+    assert(0 == pthread_mutex_lock(&rbuf_copy_mutex));
     meeting_request_buf rbuf = *(meeting_request_buf *) p_rbuf;
     copy_complete = true;
-    pthread_cond_signal(&copy_cond);
-    pthread_mutex_unlock(&rbuf_copy_mutex);
+    assert(0 == pthread_cond_signal(&copy_cond));
+    assert(0 == pthread_mutex_unlock(&rbuf_copy_mutex));
 
     // If attempting to send the final message, first check to make sure there are
     // no other pending messages to be sent in other threads.
-    pthread_mutex_lock(&send_last_msg_mutex);
+    assert(0 == pthread_mutex_lock(&send_last_msg_mutex));
     if ((rbuf.request_id == 0) && (requests_to_be_sent > 1))
     {
-        pthread_cond_wait(&ok_to_send_end_message, &send_last_msg_mutex);
+        assert(0 == pthread_cond_wait(&ok_to_send_end_message, &send_last_msg_mutex));
     }
-    pthread_mutex_unlock(&send_last_msg_mutex);
+    assert(0 == pthread_mutex_unlock(&send_last_msg_mutex));
 
     // Send a message.
     if((msgsnd(msqid, &rbuf, SEND_BUFFER_LENGTH, IPC_NOWAIT)) < 0) {
         int errnum = errno;
-        fprintf(stderr,"%d, %ld, %d, %ld\n", msqid, rbuf.mtype, rbuf.request_id, SEND_BUFFER_LENGTH);
+        fprintf(stderr,
+                "%d, %ld, %d, %ld\n", 
+                msqid, rbuf.mtype, rbuf.request_id, SEND_BUFFER_LENGTH);
         perror("(msgsnd)");
         fprintf(stderr, "Error sending msg: %s\n", strerror( errnum ));
         exit(1);
     }
-#ifdef DEBUG
+    #ifdef DEBUG
     else
     {
         fprintf(stderr,"msgsnd--mtg_req: reqid %d empid %s descr %s loc %s date %s duration %d \n",
                 rbuf.request_id,rbuf.empId,rbuf.description_string,rbuf.location_string,rbuf.datetime,rbuf.duration);
     }
-#endif
+    #endif
 
     // Update the number of requests that still need to be sent and send a signal
     // in case the last message was blocked. If no thread is waiting for this signal
     // nothing should happen.
-    pthread_mutex_lock(&send_last_msg_mutex);
+    assert(0 == pthread_mutex_lock(&send_last_msg_mutex));
     requests_to_be_sent--;
-    pthread_cond_signal(&ok_to_send_end_message);
-    pthread_mutex_unlock(&send_last_msg_mutex);
+    assert(0 == pthread_cond_signal(&ok_to_send_end_message));
+    assert(0 == pthread_mutex_unlock(&send_last_msg_mutex));
 
     // If the request expects a response, block until it is received
     if (rbuf.request_id != 0)
@@ -198,12 +210,12 @@ void * request_thread(void * p_rbuf)
         // when accessed. This also needs to include the print statements to ensure that
         // they are printed before allowing another thread to execute, creating a race
         // condition as to which print statement executes first.
-        pthread_mutex_lock(&handle_response_mutex);
+        assert(0 == pthread_mutex_lock(&handle_response_mutex));
         while(responses[rbuf.request_id - 1].request_id == 0) //< Wait until the response has been received
         {
             // Put this thread to sleep until the receiver signals that a new response has been received,
             // and this request is the next one to be printed.
-            pthread_cond_wait(&response_conds[rbuf.request_id - 1], &handle_response_mutex);
+            assert(0 == pthread_cond_wait(&response_conds[rbuf.request_id - 1], &handle_response_mutex));
         }
 
         if (responses[rbuf.request_id - 1].avail == 1)
@@ -223,9 +235,9 @@ void * request_thread(void * p_rbuf)
         // If the next response has already been received, then signal the thread to wake up
         if ((current_response < MAX_INPUT_NUMBER) && (responses[current_response].request_id != 0))
         {
-            pthread_cond_signal(&response_conds[current_response]);
+            assert(0 == pthread_cond_signal(&response_conds[current_response]));
         }
-        pthread_mutex_unlock(&handle_response_mutex);
+        assert(0 == pthread_mutex_unlock(&handle_response_mutex));
     }
     return NULL;
 }
@@ -255,13 +267,13 @@ void * receiver_thread()
             // Then signal to the thread that it's response has been received. This must be in
             // a locked section to avoid a race condition where current_response is about to be
             // updated by another thread.
-            pthread_mutex_lock(&handle_response_mutex);
+            assert(0 == pthread_mutex_lock(&handle_response_mutex));
             responses[rbuf.request_id - 1] = rbuf;
             if ((rbuf.request_id - 1) == current_response)
             {
-                pthread_cond_signal(&response_conds[current_response]);
+                assert(0 == pthread_cond_signal(&response_conds[current_response]));
             }
-            pthread_mutex_unlock(&handle_response_mutex);
+            assert(0 == pthread_mutex_unlock(&handle_response_mutex));
 
             int errnum = errno;
             if (ret < 0 && errno !=EINTR)
@@ -272,9 +284,10 @@ void * receiver_thread()
             }
         } 
         while ((ret < 0 ) && (errno == 4));
-#ifdef DEBUG
-            fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",rbuf.request_id,rbuf.avail);
-#endif
+        #ifdef DEBUG
+            fprintf(stderr,"msgrcv-mtgReqResponse: request id %d  avail %d: \n",
+                    rbuf.request_id,rbuf.avail);
+        #endif
     }
 
     return NULL;
@@ -323,9 +336,9 @@ bool init_queue(void)
         perror("(msgget)");
         fprintf(stderr, "Error msgget: %s\n", strerror( errnum ));
     }
-#ifdef DEBUG
+    #ifdef DEBUG
     else
         fprintf(stderr, "msgget: msgget succeeded: msgqid = %d\n", msqid);
-#endif
+    #endif
     return true;
 }
