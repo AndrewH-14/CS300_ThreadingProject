@@ -24,26 +24,26 @@
 
 #define MAX_INPUT_NUMBER 200
 
-//#define DEBUG
+// #define DEBUG
 
-// Variables used to determine the system 5 queue that will be used
+// System V message queue variables
 int msqid;
 int msgflg = IPC_CREAT | 0666;
 key_t key;
 
-// Phread variables that are used to ensure concurrency works correctly
-pthread_mutex_t send_mutex;
+// Mutexes that will be used to ensure the application is thread safe
 pthread_mutex_t rbuf_copy_mutex;
 pthread_mutex_t handle_response_mutex;
 pthread_mutex_t send_last_msg_mutex;
 
+// Conditional variables that will assist in making the application thread safe
 pthread_cond_t  copy_cond              = PTHREAD_COND_INITIALIZER;
 pthread_cond_t  ok_to_send_end_message = PTHREAD_COND_INITIALIZER;
-volatile bool   copy_complete          = false;
 
-// Global variables that will store information regarding responses
-volatile int current_response        = 0;
-volatile int requests_to_be_sent     = 0;
+// Variables used to store information
+volatile int  current_response    = 0;
+volatile int  requests_to_be_sent = 0;
+volatile bool copy_complete       = false;
 
 // Global arrays regarding request responses that the threads will use to 
 // support concurrency
@@ -51,8 +51,8 @@ meeting_response_buf responses[200] = {{ 0 }};
 pthread_cond_t response_conds[200];
 
 // Thread functions that will be called by pthread_create()
-void * send_request(void * p_rbuf);
-void * receive_response();
+void * request_thread(void * p_rbuf);
+void * receiver_thread();
 
 // Helper functions
 meeting_request_buf parse_request(char * p_request_string);
@@ -66,20 +66,24 @@ int main(int argc, char *argv[])
     // An array to a line from stdin when reading in requests
     char input_line[MAX_LINE_LENGTH] = { 0 };
 
+    // Array to store all of the possible threads that will be created.
+    // MAX_INPUT_ARRAY + 1 due to the request_id == 0 message
+    pthread_t threads[MAX_INPUT_NUMBER + 1];
+
+    // Meeting request struct that will store the parsed information from stdin
+    meeting_request_buf rbuf;
+
     // Used to keep track of how many threads we need to wait on
     int num_created_threads = 0;
-    meeting_request_buf rbuf;
-    rbuf.request_id = -1;
-    pthread_t threads[MAX_INPUT_NUMBER + 1];
-    current_response = 0;
+    // Set to -1 to get past the first while loop check
+    rbuf.request_id         = -1;
 
     // Initialize pthread mutex variables that will be used to support concurrency
-    pthread_mutex_init(&send_mutex, NULL);
     pthread_mutex_init(&handle_response_mutex, NULL);
     pthread_mutex_init(&send_last_msg_mutex, NULL);
     pthread_mutex_init(&rbuf_copy_mutex, NULL);
 
-    // Initialize the pthread conditional variables that the threads will wait on.
+    // Initialize the pthread conditional variables that the request threads will wait on.
     for (int idx = 0; idx < 200; idx++)
     {
         pthread_cond_init(&response_conds[idx], NULL);
@@ -89,8 +93,8 @@ int main(int argc, char *argv[])
     if (!init_queue()) { return 1; }
 
     // Create a single thread to read the responses from the message queue
-    pthread_t receiver_thread;
-    pthread_create(&receiver_thread, NULL, receive_response, NULL);
+    pthread_t p;
+    pthread_create(&p, NULL, receiver_thread, NULL);
 
     // Loop until we have received the last request to be sent.
     while (rbuf.request_id != 0)
@@ -113,6 +117,7 @@ int main(int argc, char *argv[])
         #endif
 
         // Must wait for the rbuf value to be copied over to the thread before creating the next one
+        // https://stackoverflow.com/questions/19372973/passing-multiple-variables-to-pthread-in-a-loop-arguments-get-overwritten-next
         pthread_mutex_lock(&rbuf_copy_mutex);
         pthread_create(&threads[rbuf.request_id - 1], NULL, send_request, (void *) &rbuf);
         while (!copy_complete)
@@ -126,12 +131,13 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Copy for request %d successfully completed\n", rbuf.request_id);
         #endif
 
+        // Increment the number of request threads that have been started.
+        // This will be used to know how many threads to join after all 
+        // of the requests have been received.
         num_created_threads++;
     }
 
-    printf("Joining threads\n");
-
-    // Ensure that all threads have ended before closing
+    // Once all of the request threads have ended, it is safe to exit the program
     for (int thread_idx = 0; thread_idx < num_created_threads - 1; thread_idx++)
     {
         pthread_join(threads[thread_idx], NULL);
