@@ -15,7 +15,7 @@
 #define REQUEST_ID_LENGTH 3
 #define DURATION_LENGTH   10 // Max int: 2147483647
 #define COMMA_DELIMITERS  5
-#define NULL_TERMINATOR   1
+#define NULL_TERMINATOR   2
 #define MAX_LINE_LENGTH   (REQUEST_ID_LENGTH      + \
                            EMP_ID_MAX_LENGTH      + \
                            DESCRIPTION_MAX_LENGTH + \
