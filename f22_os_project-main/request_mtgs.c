@@ -11,6 +11,12 @@
 #include "meeting_request_formats.h"
 #include "queue_ids.h"
 
+// Macro to convert max length to a string for use in scanf
+// https://stackoverflow.com/a/3301451
+#define MAX_STRING_LENGTH 20
+#define STRINGIFY(x) STRINGIFY2(x)
+#define STRINGIFY2(x) #x
+
 // Macros to determine the maximum size that an input string can be
 #define REQUEST_ID_LENGTH 3
 #define DURATION_LENGTH   10 // Max int: 2147483647
@@ -109,13 +115,20 @@ int main(int argc, char *argv[])
     while (rbuf.request_id != 0)
     {
         // Get the next line from stdin
-        fgets(input_line, MAX_LINE_LENGTH, stdin);
+        // fgets(input_line, MAX_LINE_LENGTH, stdin);
+
+        rbuf.mtype = 2;
+        scanf("%d,%"STRINGIFY(EMP_ID_MAX_LENGTH)"[^,],%"STRINGIFY(DESCRIPTION_MAX_LENGTH)"[^,],%"STRINGIFY(LOCATION_MAX_LENGTH)"[^,],%"STRINGIFY(DATETIME_LENGTH)"[^,],%d",
+              &rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, &rbuf.duration);
+
+        printf("%s\n", rbuf.location_string);
+
         #ifdef DEBUG
             fprintf(stderr, "line read: %s", input_line);
         #endif
 
         // Convert the read string into a request buf to be sent
-        rbuf = parse_request(input_line);
+        // rbuf = parse_request(input_line);
 
         pthread_mutex_lock(&send_last_msg_mutex);
         requests_to_be_sent++;
