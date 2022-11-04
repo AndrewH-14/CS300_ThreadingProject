@@ -20,6 +20,7 @@
                            EMP_ID_MAX_LENGTH      + \
                            DESCRIPTION_MAX_LENGTH + \
                            LOCATION_MAX_LENGTH    + \
+                           DATETIME_LENGTH        + \
                            DURATION_LENGTH        + \
                            COMMA_DELIMITERS       + \
                            NULL_TERMINATOR)
@@ -67,6 +68,8 @@ bool init_queue(void);
  */
 int main(int argc, char *argv[])
 {
+    printf("%d\n", MAX_LINE_LENGTH);
+
     // An array to a line from stdin when reading in requests
     char input_line[MAX_LINE_LENGTH] = { 0 };
 
