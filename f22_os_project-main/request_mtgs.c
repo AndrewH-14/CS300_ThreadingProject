@@ -157,7 +157,7 @@ int main(int argc, char *argv[])
  * 
  * @return NULL
  */
-void * send_request(void * p_rbuf)
+void * request_thread(void * p_rbuf)
 {
     // Copy the rbuf to this threads stack, and then signal to the main
     // thread that it can continue.
@@ -250,7 +250,7 @@ void * send_request(void * p_rbuf)
  * 
  * @return NULL
  */
-void * receive_response()
+void * receiver_thread()
 {
     // msgrcv to receive mtg request response type 1
     int ret;
