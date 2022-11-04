@@ -17,22 +17,6 @@
 #define STRINGIFY(x) STRINGIFY2(x)
 #define STRINGIFY2(x) #x
 
-// Macros to determine the maximum size that an input string can be
-#define REQUEST_ID_LENGTH 3
-#define DURATION_LENGTH   10 // Max int: 2147483647
-#define COMMA_DELIMITERS  5
-#define NULL_TERMINATOR   1
-#define NEWLINE_CHARACTER 1
-#define MAX_LINE_LENGTH   (REQUEST_ID_LENGTH      + \
-                           EMP_ID_MAX_LENGTH      + \
-                           DESCRIPTION_MAX_LENGTH + \
-                           LOCATION_MAX_LENGTH    + \
-                           DATETIME_LENGTH        + \
-                           DURATION_LENGTH        + \
-                           COMMA_DELIMITERS       + \
-                           NEWLINE_CHARACTER      + \
-                           NULL_TERMINATOR)
-
 #define MAX_INPUT_NUMBER 200
 
 // System V message queue variables
@@ -68,7 +52,7 @@ void * request_thread(void * p_rbuf);
 void * receiver_thread();
 
 // Helper functions
-meeting_request_buf parse_request(char * p_request_string);
+void remove_quotes(char * p_request_string, size_t size);
 bool init_queue(void);
 
 /**
@@ -76,11 +60,6 @@ bool init_queue(void);
  */
 int main(int argc, char *argv[])
 {
-    printf("%d\n", MAX_LINE_LENGTH);
-
-    // An array to a line from stdin when reading in requests
-    char input_line[MAX_LINE_LENGTH] = { 0 };
-
     // Array to store all of the possible threads that will be created.
     // MAX_INPUT_ARRAY + 1 due to the request_id == 0 message
     pthread_t threads[MAX_INPUT_NUMBER + 1];
@@ -115,20 +94,12 @@ int main(int argc, char *argv[])
     while (rbuf.request_id != 0)
     {
         // Get the next line from stdin
-        // fgets(input_line, MAX_LINE_LENGTH, stdin);
-
+        // https://stackoverflow.com/a/15091406
         rbuf.mtype = 2;
         scanf("%d,%"STRINGIFY(EMP_ID_MAX_LENGTH)"[^,],%"STRINGIFY(DESCRIPTION_MAX_LENGTH)"[^,],%"STRINGIFY(LOCATION_MAX_LENGTH)"[^,],%"STRINGIFY(DATETIME_LENGTH)"[^,],%d",
               &rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, &rbuf.duration);
-
-        printf("%s\n", rbuf.location_string);
-
-        #ifdef DEBUG
-            fprintf(stderr, "line read: %s", input_line);
-        #endif
-
-        // Convert the read string into a request buf to be sent
-        // rbuf = parse_request(input_line);
+        remove_quotes(rbuf.location_string, LOCATION_FIELD_LENGTH);
+        remove_quotes(rbuf.description_string, DESCRIPTION_FIELD_LENGTH);
 
         pthread_mutex_lock(&send_last_msg_mutex);
         requests_to_be_sent++;
@@ -312,66 +283,22 @@ void * receiver_thread()
 /**
  * Parses out the request information from the request string.
  * 
- * @param p_request_string A pointer to a string that contains a requests
- *                         information. For example: 
- *                         1,1234,"morning mtg","conf room",2022-12-17T14:30,60
- * 
- * @return A meeting_request_buffer object containing the parsed information.
+ * @param[out] p_string A string that with leading and trailing quotation
+ *                      marks to be removed.
+ * @param      size     The size of the buffer that the string is stored
+ *                      in.
  */
-meeting_request_buf parse_request(char * p_request_string)
+void remove_quotes(char * p_string, size_t size)
 {
-    meeting_request_buf rbuf = { 0 };
-    const char * deliminter = ",";
-
-    rbuf.mtype = 2;
-    rbuf.request_id=atoi(strtok(p_request_string, deliminter));
-    printf("%d\n", rbuf.request_id);
-    strncpy(
-        rbuf.empId,
-        strtok(NULL, deliminter),
-        EMP_ID_MAX_LENGTH
-    );
-    strncpy(
-        rbuf.description_string,
-        strtok(NULL, deliminter),
-        DESCRIPTION_FIELD_LENGTH
-    );
-    memmove(rbuf.description_string, &rbuf.description_string[1], DESCRIPTION_FIELD_LENGTH - 1);
-    for (int char_idx = 0; char_idx < DESCRIPTION_FIELD_LENGTH - 1; char_idx++)
+    memmove(p_string, &p_string[1], size - 1);
+    for (int char_idx = 0; char_idx < size - 1; char_idx++)
     {
-        if (rbuf.description_string[char_idx + 1] == '\0')
+        if (p_string[char_idx + 1] == '\0')
         {
-            rbuf.description_string[char_idx] = '\0';
+            p_string[char_idx] = '\0';
             break;
         }
     }
-    strncpy(
-        rbuf.location_string,
-        strtok(NULL, deliminter),
-        LOCATION_FIELD_LENGTH
-    );
-    memmove(rbuf.location_string, &rbuf.location_string[1], LOCATION_FIELD_LENGTH - 1);
-    for (int char_idx = 0; char_idx < LOCATION_FIELD_LENGTH - 1; char_idx++)
-    {
-        if (rbuf.location_string[char_idx + 1] == '\0')
-        {
-            rbuf.location_string[char_idx] = '\0';
-            break;
-        }
-    }
-    strncpy(
-        rbuf.datetime,
-        strtok(NULL, deliminter),
-        DATETIME_LENGTH
-    );
-    rbuf.duration=atoi(strtok(NULL, deliminter));
-
-#ifdef DEBUG
-    fprintf(stderr, "Parsed information: request_id %d, empId %s, desc %s, loc %s, datetime %s, duration %d\n",
-            rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
-#endif
-
-    return rbuf;
 }
 
 /**
