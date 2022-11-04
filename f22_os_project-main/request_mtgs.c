@@ -24,23 +24,25 @@
 
 #define MAX_INPUT_NUMBER 200
 
-// #define DEBUG
-
 // System V message queue variables
+// Global so that the multiple different thread functions can easily
+// access the values when sending/receiving System V messages.
 int msqid;
 int msgflg = IPC_CREAT | 0666;
 key_t key;
 
-// Mutexes that will be used to ensure the application is thread safe
+// Mutexes that will be used to ensure the application is thread safe.
+// Global since multiple threads and functions need access to this address
 pthread_mutex_t rbuf_copy_mutex;
 pthread_mutex_t handle_response_mutex;
 pthread_mutex_t send_last_msg_mutex;
 
 // Conditional variables that will assist in making the application thread safe
+// Global since muliple threads and functions need access to this address
 pthread_cond_t  copy_cond              = PTHREAD_COND_INITIALIZER;
 pthread_cond_t  ok_to_send_end_message = PTHREAD_COND_INITIALIZER;
 
-// Variables used to store information
+// Global flags and variables that are needed by multiple different threads
 volatile int  current_response    = 0;
 volatile int  requests_to_be_sent = 0;
 volatile bool copy_complete       = false;
@@ -119,7 +121,7 @@ int main(int argc, char *argv[])
         // Must wait for the rbuf value to be copied over to the thread before creating the next one
         // https://stackoverflow.com/questions/19372973/passing-multiple-variables-to-pthread-in-a-loop-arguments-get-overwritten-next
         pthread_mutex_lock(&rbuf_copy_mutex);
-        pthread_create(&threads[rbuf.request_id - 1], NULL, send_request, (void *) &rbuf);
+        pthread_create(&threads[rbuf.request_id - 1], NULL, request_thread, (void *) &rbuf);
         while (!copy_complete)
         {
             pthread_cond_wait(&copy_cond, &rbuf_copy_mutex);
