@@ -228,7 +228,6 @@ void * request_thread(void * p_rbuf)
 
         // Update the response that needs to be printed next
         current_response++;
-        printf("%d\n", current_response);
 
         // If the next response has already been received, then signal the thread to wake up
         if ((current_response < MAX_INPUT_NUMBER) && (responses[current_response].request_id != 0))
@@ -236,8 +235,6 @@ void * request_thread(void * p_rbuf)
             pthread_cond_signal(&response_conds[current_response]);
         }
         pthread_mutex_unlock(&handle_response_mutex);
-
-        printf("Exiting thread: %d\n", rbuf.request_id);
     }
     return NULL;
 }
