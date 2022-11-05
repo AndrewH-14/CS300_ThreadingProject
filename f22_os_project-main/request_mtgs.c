@@ -38,7 +38,6 @@ pthread_cond_t  copy_cond              = PTHREAD_COND_INITIALIZER;
 pthread_cond_t  ok_to_send_end_message = PTHREAD_COND_INITIALIZER;
 
 // Global flags and variables that are needed by multiple different threads
-volatile int  current_response    = 0;
 volatile int  requests_to_be_sent = 0;
 volatile bool copy_complete       = false;
 
@@ -217,6 +216,7 @@ void * request_thread(void * p_rbuf)
             // and this request is the next one to be printed.
             assert(0 == pthread_cond_wait(&response_conds[rbuf.request_id - 1], &handle_response_mutex));
         }
+        assert(0 == pthread_mutex_unlock(&handle_response_mutex));
 
         if (responses[rbuf.request_id - 1].avail == 1)
         {
@@ -229,15 +229,6 @@ void * request_thread(void * p_rbuf)
                 rbuf.request_id, rbuf.empId, rbuf.description_string, rbuf.location_string, rbuf.datetime, rbuf.duration);
         }
 
-        // Update the response that needs to be printed next
-        current_response++;
-
-        // If the next response has already been received, then signal the thread to wake up
-        if ((current_response < MAX_INPUT_NUMBER) && (responses[current_response].request_id != 0))
-        {
-            assert(0 == pthread_cond_signal(&response_conds[current_response]));
-        }
-        assert(0 == pthread_mutex_unlock(&handle_response_mutex));
     }
     return NULL;
 }
@@ -269,10 +260,7 @@ void * receiver_thread()
             // updated by another thread.
             assert(0 == pthread_mutex_lock(&handle_response_mutex));
             responses[rbuf.request_id - 1] = rbuf;
-            if ((rbuf.request_id - 1) == current_response)
-            {
-                assert(0 == pthread_cond_signal(&response_conds[current_response]));
-            }
+            assert(0 == pthread_cond_signal(&response_conds[rbuf.request_id - 1]));
             assert(0 == pthread_mutex_unlock(&handle_response_mutex));
 
             int errnum = errno;
