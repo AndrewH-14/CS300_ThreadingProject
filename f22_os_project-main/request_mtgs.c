@@ -151,9 +151,7 @@ int main(int argc, char *argv[])
 /**
  * Thread function that will add the message to the system 5 message queue
  * 
- * @param p_request_id A pointer to an integer that will be used to index the
- *                     requests buffer in order to get the information that
- *                     needs to be sent.
+ * @param p_rbuf A pointer to the message request struct to be sent.
  * 
  * @return NULL
  */
@@ -206,9 +204,7 @@ void * request_thread(void * p_rbuf)
     if (rbuf.request_id != 0)
     {
         // Lock the received mutex to ensure that all of the shared variables are accurate
-        // when accessed. This also needs to include the print statements to ensure that
-        // they are printed before allowing another thread to execute, creating a race
-        // condition as to which print statement executes first.
+        // when accessed.
         assert(0 == pthread_mutex_lock(&handle_response_mutex));
         while(responses[rbuf.request_id - 1].request_id == 0) //< Wait until the response has been received
         {
@@ -255,9 +251,7 @@ void * receiver_thread()
             ret = msgrcv(msqid, &rbuf, sizeof(rbuf)-sizeof(long), 1, 0);
 
             // Store the reponse in the global array so that it can be accessed by the threads.
-            // Then signal to the thread that it's response has been received. This must be in
-            // a locked section to avoid a race condition where current_response is about to be
-            // updated by another thread.
+            // Then signal to the thread that it's response has been received.
             assert(0 == pthread_mutex_lock(&handle_response_mutex));
             responses[rbuf.request_id - 1] = rbuf;
             assert(0 == pthread_cond_signal(&response_conds[rbuf.request_id - 1]));
@@ -282,7 +276,7 @@ void * receiver_thread()
 }
 
 /**
- * Parses out the request information from the request string.
+ * Removes the leading and trailing quotes from the given string.
  * 
  * @param[out] p_string A string that with leading and trailing quotation
  *                      marks to be removed.

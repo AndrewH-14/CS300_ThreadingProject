@@ -203,9 +203,7 @@ public class CalendarManager {
 				}
 			}
 		}
-		
 	}
-
 }
 
 
